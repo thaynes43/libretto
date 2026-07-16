@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { BuilderContext } from '../builders/index.js';
 import type { Logger } from '../logger.js';
 import type { Recipe } from '../recipes/schema.js';
 import type { RecipeStore } from '../recipes/store.js';
@@ -10,6 +11,7 @@ export interface RunQueueDeps {
   recipeStore: RecipeStore;
   runStore: RunStore;
   targets: TargetRegistry;
+  builders: BuilderContext;
   log: Logger;
 }
 
@@ -55,7 +57,7 @@ export class RunQueue {
   }
 
   private async execute(runId: string, scope: 'all' | string): Promise<void> {
-    const { recipeStore, runStore, targets, log } = this.deps;
+    const { recipeStore, runStore, targets, builders, log } = this.deps;
     const results: RecipeRunResult[] = [];
     let scopeError: string | undefined;
     try {
@@ -70,7 +72,7 @@ export class RunQueue {
       for (const recipe of recipes) {
         try {
           const target = targets.for(recipe.targetLibrary.server);
-          results.push(await reconcileRecipe(recipe, target, log));
+          results.push(await reconcileRecipe(recipe, target, log, builders));
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           log.error({ recipeId: recipe.id, err: error }, 'recipe reconcile failed');

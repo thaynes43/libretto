@@ -1,4 +1,4 @@
-# Example Libretto recipe: a static identifier list, the M1 tracer builder.
+# Example Libretto recipe: a static identifier list, the tracer builder.
 #
 # One recipe = one YAML file in CONFIG_DIR/recipes, and the filename must match
 # the recipe id (this file belongs at recipes/expanse-starters.yml). Libretto
@@ -24,8 +24,9 @@ targetLibrary:
 name: Expanse Starters
 
 builder:
-  # M1 ships one builder: static_ids. The ref IS the ordered identifier list.
-  # External-source builders (hardcover_series, nyt_list, wikidata_award) come later.
+  # static_ids: the ref IS the ordered identifier list. For an external-source
+  # builder see expanse-hardcover.yml (hardcover_series); nyt_list and
+  # wikidata_award come later.
   type: static_ids
   ref:
     - isbn:9780316129084 # Leviathan Wakes
@@ -39,7 +40,7 @@ variables:
   syncMode: sync
   # true: the collection carries the builder's order (list position matters).
   ordered: true
-  # Reserved for the LazyLibrarian acquisition leg (not implemented in M1).
+  # Reserved for the LazyLibrarian acquisition leg (arrives in M3).
   acquisitionEnabled: false
   # Optional provenance label written to the target where tags are supported.
   tag: libretto

@@ -1,7 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import { builderInfos } from '../builders/index.js';
+import { builderInfos, type BuilderContext } from '../builders/index.js';
 import type { AppConfig } from '../config.js';
 import type { Scheduler } from '../core/scheduler.js';
 import type { RunQueue } from '../core/queue.js';
@@ -24,6 +24,7 @@ export interface AppDeps {
   queue: RunQueue;
   scheduler: Scheduler;
   targets: TargetRegistry;
+  builders: BuilderContext;
   log: Logger;
 }
 
@@ -49,7 +50,7 @@ function keysMatch(presented: string | undefined, expected: string): boolean {
  * records in M1) — plus builders/targets discovery and an open /health.
  */
 export function createApp(deps: AppDeps): Hono {
-  const { config, recipeStore, runStore, queue, scheduler, targets, log } = deps;
+  const { config, recipeStore, runStore, queue, scheduler, targets, builders, log } = deps;
   const app = new Hono();
 
   app.get('/health', (c) => c.json({ status: 'ok', service: 'libretto' }));
@@ -219,7 +220,7 @@ export function createApp(deps: AppDeps): Hono {
   });
 
   // --- Discovery.
-  api.get('/builders', (c) => c.json({ builders: builderInfos }));
+  api.get('/builders', (c) => c.json({ builders: builderInfos(builders) }));
   api.get('/targets', (c) => c.json({ targets: targets.statuses() }));
 
   app.route('/api', api);

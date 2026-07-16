@@ -25,7 +25,8 @@ describe('recipeSchema', () => {
     ['bad id', { id: 'Not A Valid Id!' }],
     ['unknown server', { targetLibrary: { server: 'plex', libraryId: 'lib-1' } }],
     ['empty name', { name: '' }],
-    ['unknown builder type', { builder: { type: 'hardcover_series', ref: 'series-1' } }],
+    ['unknown builder type', { builder: { type: 'nyt_list', ref: 'series-1' } }],
+    ['empty hardcover series ref', { builder: { type: 'hardcover_series', ref: '' } }],
     ['empty static id list', { builder: { type: 'static_ids', ref: [] } }],
   ])('rejects %s', (_label, override) => {
     const parsed = recipeSchema.safeParse({ ...makeRecipe(), ...override });

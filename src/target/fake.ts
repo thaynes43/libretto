@@ -31,9 +31,16 @@ export class FakeTarget implements TargetClient {
   }
 
   /** Test helper: plant a collection as if a human (or another tool) created it. */
-  seedCollection(collection: Omit<TargetCollection, 'id'> & { id?: string }): TargetCollection {
+  seedCollection(
+    collection: Omit<TargetCollection, 'id' | 'kind'> & { id?: string; kind?: string },
+  ): TargetCollection {
     const id = collection.id ?? `fake-collection-${this.nextCollectionId++}`;
-    const stored: TargetCollection = { ...collection, id, itemIds: [...collection.itemIds] };
+    const stored: TargetCollection = {
+      kind: 'fake_collection',
+      ...collection,
+      id,
+      itemIds: [...collection.itemIds],
+    };
     this.collections.set(id, stored);
     return clone(stored);
   }
@@ -73,6 +80,7 @@ export class FakeTarget implements TargetClient {
       description: input.description,
       tags: [...(input.tags ?? [])],
       itemIds: [...input.itemIds],
+      kind: 'fake_collection',
     };
     this.collections.set(stored.id, stored);
     return Promise.resolve(clone(stored));
