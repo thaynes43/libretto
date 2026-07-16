@@ -1,5 +1,7 @@
 import { serve } from '@hono/node-server';
 import { createApp } from './api/app.js';
+import { createBuilderContext } from './builders/index.js';
+import { DiskCache } from './cache/disk.js';
 import { ensureConfigDirs, loadConfig } from './config.js';
 import { RunQueue } from './core/queue.js';
 import { Scheduler } from './core/scheduler.js';
@@ -14,8 +16,10 @@ ensureConfigDirs(config);
 
 const recipeStore = new RecipeStore(config.recipesDir);
 const runStore = new RunStore(config.runsFile);
-const targets = createTargetRegistry(config);
-const queue = new RunQueue({ recipeStore, runStore, targets, log });
+const cache = new DiskCache(config.cacheDir);
+const targets = createTargetRegistry(config, log, cache);
+const builders = createBuilderContext(config, cache, log);
+const queue = new RunQueue({ recipeStore, runStore, targets, builders, log });
 const scheduler = new Scheduler(recipeStore, queue, log);
 await scheduler.reload();
 
@@ -26,7 +30,7 @@ if (config.apiKey === undefined) {
   log.warn('LIBRETTO_API_KEY is not set: every /api request will be rejected with 401');
 }
 
-const app = createApp({ config, recipeStore, runStore, queue, scheduler, targets, log });
+const app = createApp({ config, recipeStore, runStore, queue, scheduler, targets, builders, log });
 
 const server = serve({ fetch: app.fetch, port: config.port }, (info) => {
   log.info({ port: info.port, configDir: config.configDir }, 'libretto listening');

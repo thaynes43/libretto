@@ -36,14 +36,19 @@ const targetLibrarySchema = z.strictObject({
 });
 
 /**
- * M1 ships a single builder: static_ids, the tracer. Its ref is the identifier list
- * itself, inline in the recipe. External-source builders (hardcover_series, nyt_list,
- * wikidata_award) arrive in M2+ per DESIGN-037 D-05.
+ * Builder set (DESIGN-037 D-05): static_ids (the tracer — the ref IS the ordered
+ * identifier list) and hardcover_series (the flagship — the ref is a Hardcover
+ * series id or slug; works come back ordered by series position). nyt_list and
+ * wikidata_award arrive in M3+.
  */
 const builderSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('static_ids'),
     ref: z.array(z.string().min(1)).min(1),
+  }),
+  z.strictObject({
+    type: z.literal('hardcover_series'),
+    ref: z.union([z.string().min(1), z.number().int().positive()]),
   }),
 ]);
 
