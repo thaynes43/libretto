@@ -1,5 +1,9 @@
+import type { DiskCache } from '../cache/disk.js';
 import type { AppConfig } from '../config.js';
+import type { Logger } from '../logger.js';
+import { AbsTarget } from './abs.js';
 import { FakeTarget, seedDemoLibrary } from './fake.js';
+import { KavitaTarget } from './kavita.js';
 import { TargetUnavailableError, type TargetClient } from './types.js';
 
 export interface TargetStatus {
@@ -17,11 +21,17 @@ export interface TargetRegistry {
 }
 
 /**
- * M1: real Kavita/ABS clients do not exist yet. With LIBRETTO_FAKE_TARGET=1 both
- * server kinds resolve to one shared in-memory FakeTarget; without it, resolving
- * any target fails honestly at use (never at boot — env is validated at use).
+ * Real targets activate when their env is present (KAVITA_URL + KAVITA_API_KEY,
+ * ABS_URL + ABS_TOKEN); credentials are validated at use, not at boot — a
+ * Libretto with only Kavita configured still serves ABS recipes an honest
+ * TargetUnavailableError at run time. LIBRETTO_FAKE_TARGET=1 overrides both
+ * kinds with one shared in-memory FakeTarget (tests and the demo quick start).
  */
-export function createTargetRegistry(config: AppConfig): TargetRegistry {
+export function createTargetRegistry(
+  config: AppConfig,
+  log: Logger,
+  cache: DiskCache,
+): TargetRegistry {
   if (config.fakeTarget) {
     const fake = new FakeTarget();
     seedDemoLibrary(fake);
@@ -33,26 +43,32 @@ export function createTargetRegistry(config: AppConfig): TargetRegistry {
       ],
     };
   }
-  const configured = { kavita: config.kavita !== undefined, abs: config.abs !== undefined };
+
+  const kavita = config.kavita && new KavitaTarget(config.kavita, log, cache);
+  const abs = config.abs && new AbsTarget(config.abs, log);
+  const clients: Record<'kavita' | 'abs', TargetClient | undefined> = { kavita, abs };
+  const envHint: Record<'kavita' | 'abs', string> = {
+    kavita: 'set KAVITA_URL and KAVITA_API_KEY',
+    abs: 'set ABS_URL and ABS_TOKEN',
+  };
+
   return {
     for(server) {
-      throw new TargetUnavailableError(
-        `the real ${server} client ships in M2; set LIBRETTO_FAKE_TARGET=1 to drive the walking skeleton`,
-      );
+      const client = clients[server];
+      if (!client) {
+        throw new TargetUnavailableError(`${server} is not configured; ${envHint[server]}`);
+      }
+      return client;
     },
-    statuses: () => [
-      {
-        server: 'kavita',
-        configured: configured.kavita,
-        available: false,
-        note: 'real client ships in M2',
-      },
-      {
-        server: 'abs',
-        configured: configured.abs,
-        available: false,
-        note: 'real client ships in M2',
-      },
-    ],
+    statuses: () =>
+      (['kavita', 'abs'] as const).map((server) => {
+        const configured = clients[server] !== undefined;
+        return {
+          server,
+          configured,
+          available: configured,
+          note: configured ? 'configured' : `not configured; ${envHint[server]}`,
+        };
+      }),
   };
 }
