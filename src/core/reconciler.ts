@@ -1,4 +1,4 @@
-import { resolveBuilder } from '../builders/index.js';
+import { resolveBuilder, type BuilderContext } from '../builders/index.js';
 import type { Recipe } from '../recipes/schema.js';
 import type { RecipeRunResult } from '../runs/store.js';
 import { buildCollectionDescription, recipeIdFromDescription } from '../target/marker.js';
@@ -25,9 +25,10 @@ export async function reconcileRecipe(
   recipe: Recipe,
   target: TargetClient,
   log: Logger,
+  builderCtx: BuilderContext = {},
 ): Promise<RecipeRunResult> {
   const { libraryId } = recipe.targetLibrary;
-  const works = await resolveBuilder(recipe);
+  const works = await resolveBuilder(recipe, builderCtx);
   const items = await target.listItems(libraryId);
 
   const byIdentifier = new Map<string, TargetItem>();
@@ -41,9 +42,11 @@ export async function reconcileRecipe(
   const matchedSeen = new Set<string>();
   const missing: string[] = [];
   for (const work of works) {
-    const item = byIdentifier.get(work.identifier);
+    const item = work.identifiers
+      .map((identifier) => byIdentifier.get(identifier))
+      .find((candidate) => candidate !== undefined);
     if (!item) {
-      missing.push(work.identifier);
+      missing.push(work.label);
     } else if (!matchedSeen.has(item.id)) {
       matchedSeen.add(item.id);
       matchedIds.push(item.id);
@@ -81,6 +84,7 @@ export async function reconcileRecipe(
       description: buildCollectionDescription(recipe.id),
       ...(recipe.variables.tag === undefined ? {} : { tags: [recipe.variables.tag] }),
       itemIds: matchedIds,
+      ordered: recipe.variables.ordered,
     });
     log.info({ recipeId: recipe.id, collectionId: created.id }, 'created collection');
     written = created.itemIds.length;

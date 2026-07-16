@@ -26,6 +26,7 @@ describe('RunQueue', () => {
       recipeStore,
       runStore,
       targets: registryFor(makeSeededTarget()),
+      builders: {},
       log: silentLogger,
     });
   });

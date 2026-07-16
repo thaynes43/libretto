@@ -34,7 +34,7 @@ describe('API', () => {
     const recipeStore = new RecipeStore(config.recipesDir);
     const runStore = new RunStore(config.runsFile);
     const targets = registryFor(makeSeededTarget());
-    queue = new RunQueue({ recipeStore, runStore, targets, log: silentLogger });
+    queue = new RunQueue({ recipeStore, runStore, targets, builders: {}, log: silentLogger });
     scheduler = new Scheduler(recipeStore, queue, silentLogger);
     app = createApp({
       config,
@@ -43,6 +43,7 @@ describe('API', () => {
       queue,
       scheduler,
       targets,
+      builders: {},
       log: silentLogger,
     });
   });
@@ -77,7 +78,7 @@ describe('API', () => {
       const recipeStore = new RecipeStore(config.recipesDir);
       const runStore = new RunStore(config.runsFile);
       const targets = registryFor(makeSeededTarget());
-      const q = new RunQueue({ recipeStore, runStore, targets, log: silentLogger });
+      const q = new RunQueue({ recipeStore, runStore, targets, builders: {}, log: silentLogger });
       const s = new Scheduler(recipeStore, q, silentLogger);
       const lockedApp = createApp({
         config,
@@ -86,6 +87,7 @@ describe('API', () => {
         queue: q,
         scheduler: s,
         targets,
+        builders: {},
         log: silentLogger,
       });
       const res = await lockedApp.request('/api/recipes', { headers: auth });
@@ -262,7 +264,7 @@ describe('API', () => {
       const { builders: builderList } = (await builders.json()) as {
         builders: { type: string }[];
       };
-      expect(builderList.map((b) => b.type)).toEqual(['static_ids']);
+      expect(builderList.map((b) => b.type)).toEqual(['static_ids', 'hardcover_series']);
       const targetsRes = await app.request('/api/targets', { headers: auth });
       expect(((await targetsRes.json()) as { targets: unknown[] }).targets).toHaveLength(2);
     });

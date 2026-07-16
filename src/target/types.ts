@@ -6,9 +6,10 @@
  * targets and recovers ownership from them via the provenance marker embedded in
  * the collection description (see marker.ts) — there is no local ownership table.
  *
- * M1 ships only the in-memory FakeTarget. Real Kavita and Audiobookshelf clients
- * are M2; whether Kavita descriptions are writable enough to carry the marker is
- * an open M1 spike (DESIGN-037 research flag).
+
+ * M2 ships the real Kavita and Audiobookshelf clients next to the fake. See
+ * kavita.ts and abs.ts for the marker-home spike findings (whether each target's
+ * description field is API-writable).
  */
 
 export interface TargetItem {
@@ -32,6 +33,12 @@ export interface TargetCollection {
   tags: string[];
   /** Ordered membership: target item ids in collection order. */
   itemIds: string[];
+  /**
+   * What the target materialized this as (DESIGN-037 D-07): Kavita maps ordered
+   * recipes to reading lists and unordered ones to collections; ABS and the fake
+   * have a single natively-ordered kind.
+   */
+  kind: string;
 }
 
 export interface CreateCollectionInput {
@@ -41,6 +48,12 @@ export interface CreateCollectionInput {
   description: string;
   tags?: string[];
   itemIds: string[];
+  /**
+   * The recipe's ordered flag (D-07). Targets with two container kinds pick by
+   * it (Kavita: ordered ⇒ reading list, unordered ⇒ collection); single-kind
+   * targets may ignore it.
+   */
+  ordered: boolean;
 }
 
 export interface UpdateCollectionInput {
