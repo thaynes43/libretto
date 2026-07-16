@@ -1,0 +1,49 @@
+# Example Libretto recipe: a static identifier list, the M1 tracer builder.
+#
+# One recipe = one YAML file in CONFIG_DIR/recipes, and the filename must match
+# the recipe id (this file belongs at recipes/expanse-starters.yml). Libretto
+# never rewrites these files on its own; the only writer is an explicit save
+# through PUT /api/recipes/:id.
+#
+# The identifiers below match the items the built-in fake target is seeded with
+# (LIBRETTO_FAKE_TARGET=1), so this recipe is runnable out of the box. The last
+# identifier matches nothing on purpose: it shows up in the run's missing[]
+# report instead of the collection.
+
+# Unique id: lowercase letters, digits, hyphens, underscores. Doubles as the filename.
+id: expanse-starters
+
+# Where the produced collection lives: a server kind and a library id on it.
+targetLibrary:
+  server: kavita # kavita | abs (both resolve to the fake target in dev mode)
+  libraryId: fake-library-1
+
+# Display name of the produced collection. Ownership does NOT key on this name:
+# Libretto embeds a provenance marker in the collection description and re-finds
+# its collection by that marker, so renaming the collection in the target is safe.
+name: Expanse Starters
+
+builder:
+  # M1 ships one builder: static_ids. The ref IS the ordered identifier list.
+  # External-source builders (hardcover_series, nyt_list, wikidata_award) come later.
+  type: static_ids
+  ref:
+    - isbn:9780316129084 # Leviathan Wakes
+    - isbn:9780316129060 # Caliban's War
+    - isbn:9780316129077 # Abaddon's Gate
+    - isbn:9780000000000 # not in the library: lands in missing[], nothing is fabricated
+
+variables:
+  # sync: reconcile full membership and order to the builder output (adds, removes,
+  #       repositions). append: only ever add, new items go to the end.
+  syncMode: sync
+  # true: the collection carries the builder's order (list position matters).
+  ordered: true
+  # Reserved for the LazyLibrarian acquisition leg (not implemented in M1).
+  acquisitionEnabled: false
+  # Optional provenance label written to the target where tags are supported.
+  tag: libretto
+  # A cron expression, or "manual" to only run via POST /api/apply.
+  schedule: manual
+
+enabled: true
