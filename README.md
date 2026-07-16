@@ -1,0 +1,2 @@
+# libretto
+Book collection manager
