@@ -11,9 +11,7 @@ export function startStubServer(app: Hono): Promise<{ url: string; close: () => 
       resolve({
         url: `http://127.0.0.1:${info.port}`,
         close: () =>
-          new Promise((done, fail) =>
-            server.close((error) => (error ? fail(error) : done())),
-          ),
+          new Promise((done, fail) => server.close((error) => (error ? fail(error) : done()))),
       });
     });
   });

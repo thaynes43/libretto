@@ -1,0 +1,36 @@
+# Example Libretto recipe: a Hardcover series, resolved to an ordered reading
+# list. Needs HARDCOVER_TOKEN and a real Kavita (KAVITA_URL + KAVITA_API_KEY)
+# or ABS (ABS_URL + ABS_TOKEN) connection.
+#
+# The builder asks Hardcover for every book in the series ordered by series
+# position, with each book's ISBN-13/ISBN-10/ASIN identifiers from its
+# editions. Positions your library holds become ordered membership; positions
+# it lacks land in the run's missing[] report. Nothing is title-matched.
+
+id: expanse-hardcover
+
+targetLibrary:
+  server: kavita # kavita | abs
+  # A real library id from GET /api/targets (Kavita library ids are numeric
+  # strings, ABS ids are UUIDs).
+  libraryId: '2'
+
+# Display name of the produced container. Ownership keys on the provenance
+# marker Libretto plants in the description/summary, never on this name.
+name: 'The Expanse'
+
+builder:
+  type: hardcover_series
+  # A Hardcover series slug (from the series page URL) or its numeric id.
+  ref: the-expanse
+
+variables:
+  syncMode: sync
+  # ordered: true on a Kavita library produces a READING LIST with maintained
+  # positions; ordered: false produces a collection (unordered by nature).
+  # On ABS both produce a collection, which is natively ordered.
+  ordered: true
+  acquisitionEnabled: false
+  schedule: '0 5 * * *' # re-resolve and reconcile daily at 05:00
+
+enabled: true

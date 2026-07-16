@@ -81,8 +81,7 @@ export class KavitaStub {
       }>();
       const libraryStatement = body.statements.find((statement) => statement.field === 19);
       const matching = this.series.filter(
-        (one) =>
-          libraryStatement === undefined || one.libraryId === Number(libraryStatement.value),
+        (one) => libraryStatement === undefined || one.libraryId === Number(libraryStatement.value),
       );
       const page = Number(c.req.query('PageNumber') ?? 1);
       const slice = matching.slice((page - 1) * this.seriesPageCap, page * this.seriesPageCap);
@@ -95,7 +94,9 @@ export class KavitaStub {
           totalPages: Math.max(1, Math.ceil(matching.length / this.seriesPageCap)),
         }),
       );
-      return c.json(slice.map(({ id, name, libraryId, pages }) => ({ id, name, libraryId, pages })));
+      return c.json(
+        slice.map(({ id, name, libraryId, pages }) => ({ id, name, libraryId, pages })),
+      );
     });
 
     this.app.get('/api/Series/volumes', (c) => {
@@ -110,7 +111,12 @@ export class KavitaStub {
       return c.json(
         collection.seriesIds.map((id) => {
           const one = this.series.find((s) => s.id === id);
-          return { id, name: one?.name ?? '', libraryId: one?.libraryId ?? 0, pages: one?.pages ?? 0 };
+          return {
+            id,
+            name: one?.name ?? '',
+            libraryId: one?.libraryId ?? 0,
+            pages: one?.pages ?? 0,
+          };
         }),
       );
     });
@@ -145,7 +151,12 @@ export class KavitaStub {
     });
 
     this.app.post('/api/Collection/update', async (c) => {
-      const dto = await c.req.json<{ id: number; title: string; summary?: string | null; promoted?: boolean }>();
+      const dto = await c.req.json<{
+        id: number;
+        title: string;
+        summary?: string | null;
+        promoted?: boolean;
+      }>();
       const collection = this.collections.get(dto.id);
       if (!collection) return c.json({ message: 'not found' }, 400);
       if (!dto.title) return c.json({ message: 'title required' }, 400);

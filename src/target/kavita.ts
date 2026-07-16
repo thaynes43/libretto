@@ -130,7 +130,10 @@ export class KavitaTarget implements TargetClient {
   }
 
   /** Bearer-authenticated request with a single re-auth retry on 401. */
-  private async request<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<{
+  private async request<T>(
+    path: string,
+    init: { method?: string; body?: unknown } = {},
+  ): Promise<{
     data: T;
     headers: Headers;
   }> {
@@ -284,9 +287,7 @@ export class KavitaTarget implements TargetClient {
   }
 
   async createCollection(input: CreateCollectionInput): Promise<TargetCollection> {
-    return input.ordered
-      ? this.createReadingList(input)
-      : this.createUnorderedCollection(input);
+    return input.ordered ? this.createReadingList(input) : this.createUnorderedCollection(input);
   }
 
   private async createUnorderedCollection(input: CreateCollectionInput): Promise<TargetCollection> {
@@ -409,9 +410,7 @@ export class KavitaTarget implements TargetClient {
     }
 
     // Append series that are new (update-by-series appends all its chapters).
-    const present = new Set(
-      (await this.readingListItems(id)).map((item) => String(item.seriesId)),
-    );
+    const present = new Set((await this.readingListItems(id)).map((item) => String(item.seriesId)));
     for (const seriesId of itemIds) {
       if (present.has(seriesId)) continue;
       await this.post('/api/ReadingList/update-by-series', {
