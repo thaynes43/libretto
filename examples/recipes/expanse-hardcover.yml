@@ -31,6 +31,10 @@ variables:
   # On ABS both produce a collection, which is natively ordered.
   ordered: true
   acquisitionEnabled: false
+  # D-04 conservative title fallback: when a work finds no identifier match
+  # (common on Kavita epubs that expose no scheme'd ISBN), try a noise-stripped
+  # exact-title + author match. Default true; set false for identifier-only.
+  titleFallback: true
   schedule: '0 5 * * *' # re-resolve and reconcile daily at 05:00
 
 enabled: true

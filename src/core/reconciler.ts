@@ -1,4 +1,5 @@
 import { resolveBuilder, type BuilderContext } from '../builders/index.js';
+import { TitleIndex } from '../matching/title.js';
 import type { Recipe } from '../recipes/schema.js';
 import type { RecipeRunResult } from '../runs/store.js';
 import { buildCollectionDescription, recipeIdFromDescription } from '../target/marker.js';
@@ -38,18 +39,45 @@ export async function reconcileRecipe(
     }
   }
 
+  // D-04 conservative title fallback (default on, per-recipe opt-out via
+  // variables.titleFallback). Identifier matching stays the ceiling; only works
+  // it leaves unmatched are offered to the noise-stripped exact-title matcher,
+  // which refuses ambiguity rather than guess. Title matches are FLAGGED
+  // (matchedVia) so the run can report them distinctly from identifier matches.
+  const titleFallbackEnabled = recipe.variables.titleFallback;
+  const titleIndex = titleFallbackEnabled ? new TitleIndex(items) : undefined;
+
   const matchedIds: string[] = [];
   const matchedSeen = new Set<string>();
   const missing: string[] = [];
+  let matchedByTitle = 0;
   for (const work of works) {
-    const item = work.identifiers
+    let matchedVia: 'identifier' | 'title' | undefined;
+    let item = work.identifiers
       .map((identifier) => byIdentifier.get(identifier))
       .find((candidate) => candidate !== undefined);
+    if (item) {
+      matchedVia = 'identifier';
+    } else if (titleIndex) {
+      const candidate = titleIndex.match(work.title, work.authors, matchedSeen);
+      if (candidate) {
+        item = items.find((one) => one.id === candidate.id);
+        matchedVia = 'title';
+      }
+    }
+
     if (!item) {
       missing.push(work.label);
     } else if (!matchedSeen.has(item.id)) {
       matchedSeen.add(item.id);
       matchedIds.push(item.id);
+      if (matchedVia === 'title') {
+        matchedByTitle += 1;
+        log.info(
+          { recipeId: recipe.id, itemId: item.id, work: work.label, matchedVia },
+          'matched by conservative title fallback (no identifier hit)',
+        );
+      }
     }
   }
 
@@ -124,7 +152,14 @@ export async function reconcileRecipe(
 
   return {
     recipeId: recipe.id,
-    counts: { matched: matchedIds.length, written, added, removed, missing: missing.length },
+    counts: {
+      matched: matchedIds.length,
+      matchedByTitle,
+      written,
+      added,
+      removed,
+      missing: missing.length,
+    },
     missing,
   };
 }

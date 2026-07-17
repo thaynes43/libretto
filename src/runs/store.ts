@@ -5,8 +5,15 @@ import path from 'node:path';
 export interface RecipeRunResult {
   recipeId: string;
   counts: {
-    /** Work-list entries that matched a library item. */
+    /** Work-list entries that matched a library item (by identifier or title). */
     matched: number;
+    /**
+     * Subset of `matched` resolved by the conservative D-04 title fallback rather
+     * than an identifier — the "flagged" surface that keeps a title match
+     * distinguishable from an identifier match. 0 when the fallback is off or
+     * unused. `matched - matchedByTitle` is the identifier-matched count.
+     */
+    matchedByTitle: number;
     /** Collection membership size after the run (what is materialized in the target). */
     written: number;
     /** Items added to the collection this run. */

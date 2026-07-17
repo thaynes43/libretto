@@ -197,7 +197,15 @@ export class HardcoverSeriesSource {
         ranked.flatMap((edition) => [edition.isbn_13, edition.isbn_10, edition.asin]),
       );
       const position = entry.position === null ? '?' : String(entry.position);
-      works.push({ identifiers, label: `${book.title} (#${position} in ${series.name})` });
+      works.push({
+        identifiers,
+        label: `${book.title} (#${position} in ${series.name})`,
+        // Clean title feeds the conservative D-04 title fallback when a target
+        // exposes no scheme'd ISBNs (e.g. Kavita epubs). Author is out of reach
+        // here: the Hardcover GraphQL depth-3 cap already spends its budget on
+        // series -> book_series -> book, so contributions would exceed it.
+        title: book.title,
+      });
     }
 
     await this.options.cache.set(cacheKey, works, this.cacheTtlMs);

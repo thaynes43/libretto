@@ -56,6 +56,13 @@ const variablesSchema = z.strictObject({
   syncMode: z.enum(['append', 'sync']),
   ordered: z.boolean(),
   acquisitionEnabled: z.boolean().default(false),
+  /**
+   * D-04 conservative title fallback: when identifier matching leaves a work
+   * unmatched, try a noise-stripped exact-title (+ author guard) match. Default
+   * on; set false to pin a recipe to identifier-only matching. Title-matched
+   * items are flagged in the run counts (matchedByTitle).
+   */
+  titleFallback: z.boolean().default(true),
   tag: z.string().min(1).optional(),
   schedule: scheduleSchema,
 });

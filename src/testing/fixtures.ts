@@ -23,6 +23,7 @@ export function makeRecipe(overrides: Partial<Recipe> = {}): Recipe {
       syncMode: 'sync',
       ordered: true,
       acquisitionEnabled: false,
+      titleFallback: true,
       schedule: 'manual',
     },
     enabled: true,
