@@ -138,7 +138,10 @@ export class HardcoverSeriesSource {
 
   /** Resolve a series ref (numeric id or slug) to its ordered work list. */
   async seriesWorks(ref: string): Promise<WorkItem[]> {
-    const cacheKey = `hardcover:series-works:v1:${ref}`;
+    // Bump the key version whenever the cached WorkItem shape changes — a live
+    // pod otherwise serves pre-change entries for the full TTL (D-04's title
+    // fallback matched 0 in production because v1 entries carried no `title`).
+    const cacheKey = `hardcover:series-works:v2:${ref}`;
     const cached = await this.options.cache.get<WorkItem[]>(cacheKey);
     if (cached !== undefined) {
       this.options.log.debug({ ref, works: cached.length }, 'hardcover: series cache hit');
