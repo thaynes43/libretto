@@ -1,7 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { AcquisitionCounts } from '../acquire/acquire.js';
 
-/** Per-recipe outcome recorded into the run (DESIGN-037 D-02 Run counts, minus acquired: M2). */
+/** Per-recipe outcome recorded into the run (DESIGN-037 D-02 Run counts + M3 acquisition). */
 export interface RecipeRunResult {
   recipeId: string;
   counts: {
@@ -25,6 +26,13 @@ export interface RecipeRunResult {
   };
   /** Identifiers the builder demanded that no library item matched (the missing[] shape). */
   missing: string[];
+  /**
+   * Acquisition tallies (DESIGN-037 M3). Present ONLY when the recipe ran the acquisition leg
+   * (variables.acquisitionEnabled with LazyLibrarian configured); omitted otherwise so a
+   * non-acquiring run's shape is unchanged. Kept a sibling of `counts` (not inside it) so the
+   * reconcile-count contract stays stable.
+   */
+  acquisition?: AcquisitionCounts;
   error?: string;
 }
 

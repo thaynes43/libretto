@@ -36,6 +36,10 @@ export interface AppConfig {
   lazyLibrarian: ServiceEndpoint | undefined;
   hardcoverToken: string | undefined;
   nytApiKey: string | undefined;
+  /** Max acquisition actions (LL adds + queue-drives) per recipe run (M3 pacing). */
+  acquisitionCapPerRun: number;
+  /** Spacing between LazyLibrarian write calls, ms (estate politeness). */
+  acquisitionIntervalMs: number;
 }
 
 function endpoint(
@@ -64,7 +68,15 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     lazyLibrarian: endpoint(env.LAZYLIBRARIAN_URL, env.LAZYLIBRARIAN_API_KEY),
     hardcoverToken: env.HARDCOVER_TOKEN || undefined,
     nytApiKey: env.NYT_API_KEY || undefined,
+    acquisitionCapPerRun: positiveInt(env.LIBRETTO_ACQUISITION_CAP_PER_RUN, 10),
+    acquisitionIntervalMs: positiveInt(env.LIBRETTO_ACQUISITION_INTERVAL_MS, 3000),
   };
+}
+
+/** Parse a positive integer env var, falling back to `fallback` on unset/invalid/<=0 input. */
+function positiveInt(raw: string | undefined, fallback: number): number {
+  const value = Number(raw);
+  return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
 /** Create the config-volume layout if it does not exist yet. */

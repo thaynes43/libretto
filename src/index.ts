@@ -1,4 +1,5 @@
 import { serve } from '@hono/node-server';
+import { createAcquireContext } from './acquire/acquire.js';
 import { createApp } from './api/app.js';
 import { createBuilderContext } from './builders/index.js';
 import { DiskCache } from './cache/disk.js';
@@ -19,7 +20,8 @@ const runStore = new RunStore(config.runsFile);
 const cache = new DiskCache(config.cacheDir);
 const targets = createTargetRegistry(config, log, cache);
 const builders = createBuilderContext(config, cache, log);
-const queue = new RunQueue({ recipeStore, runStore, targets, builders, log });
+const acquire = createAcquireContext(config, log);
+const queue = new RunQueue({ recipeStore, runStore, targets, builders, acquire, log });
 const scheduler = new Scheduler(recipeStore, queue, log);
 await scheduler.reload();
 

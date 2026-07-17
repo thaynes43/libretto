@@ -30,6 +30,9 @@ variables:
   # positions; ordered: false produces a collection (unordered by nature).
   # On ABS both produce a collection, which is natively ordered.
   ordered: true
+  # M3: when true (and LAZYLIBRARIAN_URL/API_KEY are set), works this recipe wants
+  # but your library lacks are handed to LazyLibrarian to acquire (eBooks for a
+  # Kavita recipe, AudioBooks for an ABS one). Default false. See the README.
   acquisitionEnabled: false
   # D-04 conservative title fallback: when a work finds no identifier match
   # (common on Kavita epubs that expose no scheme'd ISBN), try a noise-stripped

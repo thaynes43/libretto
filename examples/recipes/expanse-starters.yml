@@ -40,7 +40,8 @@ variables:
   syncMode: sync
   # true: the collection carries the builder's order (list position matters).
   ordered: true
-  # Reserved for the LazyLibrarian acquisition leg (arrives in M3).
+  # M3: when true (and LAZYLIBRARIAN_URL/API_KEY are set), hand works this recipe
+  # wants but your library lacks to LazyLibrarian to acquire. Default false.
   acquisitionEnabled: false
   # Optional provenance label written to the target where tags are supported.
   tag: libretto
