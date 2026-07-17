@@ -37,9 +37,11 @@ const targetLibrarySchema = z.strictObject({
 
 /**
  * Builder set (DESIGN-037 D-05): static_ids (the tracer — the ref IS the ordered
- * identifier list) and hardcover_series (the flagship — the ref is a Hardcover
- * series id or slug; works come back ordered by series position). nyt_list and
- * wikidata_award arrive in M3+.
+ * identifier list), hardcover_series (the ref is a Hardcover series id or slug;
+ * works come back ordered by series position), and nyt_list (the ref is a NYT
+ * list_name_encoded slug; works come back ordered by bestseller rank). The
+ * provenance-derivation contract keeps the type string exactly `nyt_list`.
+ * wikidata_award arrives later.
  */
 const builderSchema = z.discriminatedUnion('type', [
   z.strictObject({
@@ -49,6 +51,10 @@ const builderSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('hardcover_series'),
     ref: z.union([z.string().min(1), z.number().int().positive()]),
+  }),
+  z.strictObject({
+    type: z.literal('nyt_list'),
+    ref: z.string().min(1),
   }),
 ]);
 

@@ -25,12 +25,18 @@ describe('recipeSchema', () => {
     ['bad id', { id: 'Not A Valid Id!' }],
     ['unknown server', { targetLibrary: { server: 'plex', libraryId: 'lib-1' } }],
     ['empty name', { name: '' }],
-    ['unknown builder type', { builder: { type: 'nyt_list', ref: 'series-1' } }],
+    ['unknown builder type', { builder: { type: 'goodreads_shelf', ref: 'series-1' } }],
     ['empty hardcover series ref', { builder: { type: 'hardcover_series', ref: '' } }],
+    ['empty nyt list ref', { builder: { type: 'nyt_list', ref: '' } }],
     ['empty static id list', { builder: { type: 'static_ids', ref: [] } }],
   ])('rejects %s', (_label, override) => {
     const parsed = recipeSchema.safeParse({ ...makeRecipe(), ...override });
     expect(parsed.success).toBe(false);
+  });
+
+  it('accepts a nyt_list builder with a list_name_encoded ref', () => {
+    const recipe = { ...makeRecipe(), builder: { type: 'nyt_list', ref: 'hardcover-fiction' } };
+    expect(recipeSchema.safeParse(recipe).success).toBe(true);
   });
 
   it('rejects a bad cron schedule', () => {
