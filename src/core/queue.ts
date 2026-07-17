@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { AcquireContext } from '../acquire/acquire.js';
 import type { BuilderContext } from '../builders/index.js';
 import type { Logger } from '../logger.js';
 import type { Recipe } from '../recipes/schema.js';
@@ -12,6 +13,8 @@ export interface RunQueueDeps {
   runStore: RunStore;
   targets: TargetRegistry;
   builders: BuilderContext;
+  /** M3 acquisition leg; undefined when LazyLibrarian is not configured. */
+  acquire?: AcquireContext | undefined;
   log: Logger;
 }
 
@@ -57,7 +60,7 @@ export class RunQueue {
   }
 
   private async execute(runId: string, scope: 'all' | string): Promise<void> {
-    const { recipeStore, runStore, targets, builders, log } = this.deps;
+    const { recipeStore, runStore, targets, builders, acquire, log } = this.deps;
     const results: RecipeRunResult[] = [];
     let scopeError: string | undefined;
     try {
@@ -72,7 +75,7 @@ export class RunQueue {
       for (const recipe of recipes) {
         try {
           const target = targets.for(recipe.targetLibrary.server);
-          results.push(await reconcileRecipe(recipe, target, log, builders));
+          results.push(await reconcileRecipe(recipe, target, log, builders, acquire));
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           log.error({ recipeId: recipe.id, err: error }, 'recipe reconcile failed');

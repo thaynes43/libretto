@@ -1,4 +1,6 @@
-import { resolveBuilder, type BuilderContext } from '../builders/index.js';
+import { acquireMissing, type AcquireContext } from '../acquire/acquire.js';
+import type { LlFormat } from '../acquire/lazylibrarian.js';
+import { resolveBuilder, type BuilderContext, type WorkItem } from '../builders/index.js';
 import { TitleIndex } from '../matching/title.js';
 import type { Recipe } from '../recipes/schema.js';
 import type { RecipeRunResult } from '../runs/store.js';
@@ -27,6 +29,7 @@ export async function reconcileRecipe(
   target: TargetClient,
   log: Logger,
   builderCtx: BuilderContext = {},
+  acquire?: AcquireContext,
 ): Promise<RecipeRunResult> {
   const { libraryId } = recipe.targetLibrary;
   const works = await resolveBuilder(recipe, builderCtx);
@@ -50,6 +53,8 @@ export async function reconcileRecipe(
   const matchedIds: string[] = [];
   const matchedSeen = new Set<string>();
   const missing: string[] = [];
+  // The full unmatched works (not just labels) feed the M3 acquisition leg.
+  const missingWorks: WorkItem[] = [];
   let matchedByTitle = 0;
   for (const work of works) {
     let matchedVia: 'identifier' | 'title' | undefined;
@@ -68,6 +73,7 @@ export async function reconcileRecipe(
 
     if (!item) {
       missing.push(work.label);
+      missingWorks.push(work);
     } else if (!matchedSeen.has(item.id)) {
       matchedSeen.add(item.id);
       matchedIds.push(item.id);
@@ -150,6 +156,24 @@ export async function reconcileRecipe(
     written = desired.length;
   }
 
+  // M3 acquisition leg: wire missing[] into LazyLibrarian so the recipe ACQUIRES. Gated on the
+  // recipe's variables.acquisitionEnabled (default false — the coordinator does the controlled
+  // rollout) AND LazyLibrarian being configured. Kavita recipes acquire eBooks; ABS recipes
+  // AudioBooks. Best-effort and stateless: it never fails the reconcile, and re-runs are idempotent
+  // (LazyLibrarian is the ledger). See acquire/acquire.ts for the mechanism.
+  let acquisition: RecipeRunResult['acquisition'];
+  if (recipe.variables.acquisitionEnabled) {
+    if (acquire) {
+      const format: LlFormat = recipe.targetLibrary.server === 'abs' ? 'audiobook' : 'ebook';
+      acquisition = await acquireMissing(recipe.id, missingWorks, format, acquire, log);
+    } else {
+      log.warn(
+        { recipeId: recipe.id },
+        'acquisitionEnabled but LazyLibrarian is not configured (set LAZYLIBRARIAN_URL and LAZYLIBRARIAN_API_KEY); acquisition skipped',
+      );
+    }
+  }
+
   return {
     recipeId: recipe.id,
     counts: {
@@ -161,6 +185,7 @@ export async function reconcileRecipe(
       missing: missing.length,
     },
     missing,
+    ...(acquisition ? { acquisition } : {}),
   };
 }
 
