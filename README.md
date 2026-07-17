@@ -2,7 +2,7 @@
 
 [Kometa](https://kometa.wiki/) for your book stack. Libretto builds and maintains collections in [Kavita](https://www.kavitareader.com/) and [Audiobookshelf](https://www.audiobookshelf.org/) from recipes: declarative YAML files that say "this list of books belongs together, in this order, in that library". Items a recipe wants but your library lacks become an honest missing report, which — when a recipe opts in — Libretto feeds to [LazyLibrarian](https://lazylibrarian.gitlab.io/) to drive acquisition.
 
-> **Status: pre-alpha (M3, acquisition).** Real Kavita and Audiobookshelf clients are live next to the M1 walking skeleton: the `hardcover_series` builder resolves a series from [Hardcover](https://hardcover.app/) into an ordered, identifier-keyed work list, and the reconciler materializes it as a Kavita collection or reading list, or an Audiobookshelf collection. **M3 wires `missing[]` into LazyLibrarian** so a recipe can acquire what your library lacks (see [The acquisition leg](#the-acquisition-leg-m3)). Remaining before beta: the NYT and Wikidata builders, and hardening. The architecture is written up in the [design document](https://github.com/thaynes43/haynesnetwork/blob/main/docs/designs/037-libretto-architecture.md).
+> **Status: pre-alpha (M3, acquisition).** Real Kavita and Audiobookshelf clients are live next to the M1 walking skeleton: the `hardcover_series` and `nyt_list` builders resolve, respectively, a [Hardcover](https://hardcover.app/) series and a [New York Times](https://developer.nytimes.com/docs/books-product/1/overview) bestseller list into an ordered, identifier-keyed work list, and the reconciler materializes it as a Kavita collection or reading list, or an Audiobookshelf collection. **M3 wires `missing[]` into LazyLibrarian** so a recipe can acquire what your library lacks (see [The acquisition leg](#the-acquisition-leg-m3)) — with `nyt_list` that means the estate can CHASE the current bestseller list. Remaining before beta: the Wikidata builder, and hardening. The architecture is written up in the [design document](https://github.com/thaynes43/haynesnetwork/blob/main/docs/designs/037-libretto-architecture.md).
 
 Libretto is Kometa-like on purpose: YAML recipes in, collections out, logs and a REST API to watch it work. There is no built-in web interface; the API exists for automation and for other frontends to bind to.
 
@@ -147,36 +147,37 @@ Everything lives on the `/config` volume (override with `CONFIG_DIR`):
   recipes/     one YAML file per recipe, filename = recipe id; yours to edit,
                written by Libretto only on an explicit API save
   state/       runs.json, the last 50 run records (losable)
-  cache/       TTL disk cache: resolved Hardcover series, per-series Kavita
-               ISBN lookups (losable, rebuilds itself)
+  cache/       TTL disk cache: resolved Hardcover series and NYT lists,
+               per-series Kavita ISBN lookups (losable, rebuilds itself)
 ```
 
 Environment variables (all connection settings are validated at use, not at boot):
 
-| Variable                                     | Purpose                                                                                                                                                |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `LIBRETTO_API_KEY`                           | Bearer key for everything under `/api`. Unset means the API is locked.                                                                                 |
-| `KAVITA_URL`, `KAVITA_API_KEY`               | Kavita connection. The API key is a Kavita user API key; Libretto authenticates with it via the plugin flow.                                           |
-| `ABS_URL`, `ABS_TOKEN`                       | Audiobookshelf connection. A user API token or an API key, sent as a Bearer token.                                                                     |
-| `HARDCOVER_TOKEN`                            | [Hardcover](https://hardcover.app/) token for the `hardcover_series` builder. Tokens expire each January 1st.                                          |
-| `LIBRETTO_FAKE_TARGET`                       | `1` serves the in-memory fake target for both server kinds (demo and tests).                                                                           |
-| `CONFIG_DIR`                                 | Config volume path, default `/config`.                                                                                                                 |
-| `PORT`                                       | HTTP port, default `8080`.                                                                                                                             |
-| `LOG_LEVEL`                                  | [pino](https://getpino.io/) level, default `info`.                                                                                                     |
-| `LAZYLIBRARIAN_URL`, `LAZYLIBRARIAN_API_KEY` | [LazyLibrarian](https://lazylibrarian.gitlab.io/) connection for the acquisition leg (M3). The API key is the LazyLibrarian API key from its settings. |
-| `LIBRETTO_ACQUISITION_CAP_PER_RUN`           | Max acquisition actions (LazyLibrarian adds + queue-drives) per recipe run. Default `10`.                                                              |
-| `LIBRETTO_ACQUISITION_INTERVAL_MS`           | Spacing between LazyLibrarian write calls, in ms (estate politeness). Default `3000`.                                                                  |
-| `NYT_API_KEY`                                | [NYT Books API](https://developer.nytimes.com/docs/books-product/1/overview) key for the NYT list builder (planned).                                   |
+| Variable                                     | Purpose                                                                                                                                                                                                 |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `LIBRETTO_API_KEY`                           | Bearer key for everything under `/api`. Unset means the API is locked.                                                                                                                                  |
+| `KAVITA_URL`, `KAVITA_API_KEY`               | Kavita connection. The API key is a Kavita user API key; Libretto authenticates with it via the plugin flow.                                                                                            |
+| `ABS_URL`, `ABS_TOKEN`                       | Audiobookshelf connection. A user API token or an API key, sent as a Bearer token.                                                                                                                      |
+| `HARDCOVER_TOKEN`                            | [Hardcover](https://hardcover.app/) token for the `hardcover_series` builder. Tokens expire each January 1st.                                                                                           |
+| `LIBRETTO_FAKE_TARGET`                       | `1` serves the in-memory fake target for both server kinds (demo and tests).                                                                                                                            |
+| `CONFIG_DIR`                                 | Config volume path, default `/config`.                                                                                                                                                                  |
+| `PORT`                                       | HTTP port, default `8080`.                                                                                                                                                                              |
+| `LOG_LEVEL`                                  | [pino](https://getpino.io/) level, default `info`.                                                                                                                                                      |
+| `LAZYLIBRARIAN_URL`, `LAZYLIBRARIAN_API_KEY` | [LazyLibrarian](https://lazylibrarian.gitlab.io/) connection for the acquisition leg (M3). The API key is the LazyLibrarian API key from its settings.                                                  |
+| `LIBRETTO_ACQUISITION_CAP_PER_RUN`           | Max acquisition actions (LazyLibrarian adds + queue-drives) per recipe run. Default `10`.                                                                                                               |
+| `LIBRETTO_ACQUISITION_INTERVAL_MS`           | Spacing between LazyLibrarian write calls, in ms (estate politeness). Default `3000`.                                                                                                                   |
+| `NYT_API_KEY`                                | [NYT Books API](https://developer.nytimes.com/docs/books-product/1/overview) key for the `nyt_list` builder. Free tier is roughly 500 requests/day and 5/minute; Libretto paces and caches accordingly. |
 
 ### Notes on the target accounts
 
 - **Kavita collections and reading lists are per-user.** Whatever account owns the `KAVITA_API_KEY` owns everything Libretto creates. Libretto asks Kavita to promote its creations so other users see them; that only takes effect if the account has the Promote (or Admin) role. Use the same account other sync tooling in your stack already uses.
 - **Audiobookshelf collections are shared per-library**, so any account with update permission works.
 - **Hardcover paces itself** to the documented 60 requests/minute and caches resolved series on disk for six hours, so scheduled re-runs are cheap.
+- **NYT paces itself** to the free tier's roughly 5 requests/minute, retries a `429` with exponential backoff, and caches each resolved list on disk for six hours (the lists refresh weekly), so a daily schedule stays well under the ~500/day quota.
 
 ## Recipes
 
-A recipe is one YAML file. The commented examples in [`examples/recipes/`](examples/recipes/) include a fake-target starter and a real Hardcover one. The shape:
+A recipe is one YAML file. The commented examples in [`examples/recipes/`](examples/recipes/) include a fake-target starter, a real Hardcover series, and a NYT bestseller list. The shape:
 
 ```yaml
 id: expanse
@@ -185,7 +186,7 @@ targetLibrary:
   libraryId: '2' # from GET /api/targets
 name: The Expanse
 builder:
-  type: hardcover_series # or static_ids (the ref is then an identifier list)
+  type: hardcover_series # static_ids | hardcover_series | nyt_list
   ref: the-expanse # Hardcover series slug or numeric id
 variables:
   syncMode: sync # sync reconciles membership and order; append only ever adds
@@ -209,6 +210,20 @@ Safety rules the reconciler enforces:
 - `append` never removes. A run that matches zero items flags a warning and leaves the collection alone.
 - Deleting a recipe orphans its collection in the target; nothing is deleted remotely.
 - Unmatched works are reported in `missing[]`, never guessed at.
+
+### Builders
+
+A builder turns `builder.ref` into the ordered work list the reconciler matches against your library. `GET /api/builders` reports which are available in your instance (an external-source builder needs its env set).
+
+| `type`             | `ref`                                 | Source and order                                                                                                                      |
+| ------------------ | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `static_ids`       | an array of identifier strings        | The ref itself, in order. No external source.                                                                                         |
+| `hardcover_series` | a Hardcover series slug or numeric id | Every book in the series ordered by series position ([Hardcover](https://hardcover.app/); needs `HARDCOVER_TOKEN`).                   |
+| `nyt_list`         | a NYT `list_name_encoded` slug        | The current [NYT bestseller list](https://developer.nytimes.com/docs/books-product/1/overview) ordered by rank (needs `NYT_API_KEY`). |
+
+**`nyt_list`** takes the `list_name_encoded` value of any current NYT Books list as its `ref` — for example `hardcover-fiction`, `trade-fiction-paperback`, `combined-print-and-e-book-fiction`, or `young-adult-hardcover`. The full set of valid names is the [`/lists/names.json`](https://api.nytimes.com/svc/books/v3/lists/names.json) endpoint, and an unknown `ref` fails the run with a message pointing there. Each entry contributes its `primary_isbn13`/`primary_isbn10` and every edition in `isbns[]` as match identifiers, and `ordered: true` yields a reading list ranked #1..#n. NYT titles arrive ALL-CAPS and are normalized to title case for display; matching is identifier-based (case-insensitive) either way.
+
+Because `nyt_list` re-resolves to the _current_ list on every run, **turning `acquisitionEnabled: true` on a `nyt_list` recipe makes the estate chase the bestseller list**: each week's new entries your library lacks are handed to LazyLibrarian to acquire. Leave it `false` (the example ships that way) until you mean it. See [`examples/recipes/nyt-hardcover-fiction.yml`](examples/recipes/nyt-hardcover-fiction.yml).
 
 ## API
 

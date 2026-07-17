@@ -1,0 +1,51 @@
+# Example Libretto recipe: the current New York Times Hardcover Fiction
+# bestseller list, resolved to a rank-ordered reading list. Needs NYT_API_KEY
+# (a free key from developer.nytimes.com) and a real Kavita (KAVITA_URL +
+# KAVITA_API_KEY) or ABS (ABS_URL + ABS_TOKEN) connection.
+#
+# The builder asks the NYT Books API for the current list ordered by rank, with
+# each entry's ISBN-13/ISBN-10 identifiers (primary + every edition in isbns[]).
+# Ranks your library holds become ordered membership; ranks it lacks land in the
+# run's missing[] report. Nothing is title-matched by default beyond the D-04
+# conservative fallback.
+
+id: nyt-hardcover-fiction
+
+targetLibrary:
+  server: kavita # kavita | abs
+  # A real library id from GET /api/targets (Kavita library ids are numeric
+  # strings, ABS ids are UUIDs).
+  libraryId: '2'
+
+# Display name of the produced container. Ownership keys on the provenance
+# marker Libretto plants in the description/summary, never on this name.
+name: 'NYT Hardcover Fiction'
+
+builder:
+  type: nyt_list
+  # A NYT list_name_encoded slug (the values from
+  # https://api.nytimes.com/svc/books/v3/lists/names.json). Other examples:
+  # trade-fiction-paperback, combined-print-and-e-book-fiction,
+  # young-adult-hardcover.
+  ref: hardcover-fiction
+
+variables:
+  syncMode: sync
+  # ordered: true on a Kavita library produces a READING LIST ranked #1..#15;
+  # ordered: false produces a collection. On ABS both produce a collection,
+  # which is natively ordered.
+  ordered: true
+  # M3: LEAVE THIS false unless you mean it. Flipping it on (with
+  # LAZYLIBRARIAN_URL/API_KEY set) makes the estate CHASE the current bestseller
+  # list — every book on the list your library lacks is handed to LazyLibrarian
+  # to acquire (eBooks for a Kavita recipe, AudioBooks for an ABS one), and the
+  # membership re-resolves to the fresh list on each scheduled run. See the README.
+  acquisitionEnabled: false
+  # D-04 conservative title fallback: when a work finds no identifier match,
+  # try a noise-stripped exact-title + author match. Default true.
+  titleFallback: true
+  # The NYT lists refresh weekly; a daily re-resolve keeps the collection current
+  # (the resolved list is disk-cached for a few hours, so this is cheap).
+  schedule: '0 6 * * *'
+
+enabled: true

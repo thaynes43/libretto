@@ -4,6 +4,7 @@ import { normalizeIdentifier } from '../identifiers.js';
 import type { Logger } from '../logger.js';
 import type { Recipe } from '../recipes/schema.js';
 import { HardcoverSeriesSource } from './hardcover.js';
+import { NytListSource } from './nyt.js';
 
 /**
  * A unit of work a builder wants in the collection. A work can be known by
@@ -44,6 +45,8 @@ export interface BuilderInfo {
 export interface BuilderContext {
   /** Hardcover series source (undefined until HARDCOVER_TOKEN is set). */
   hardcoverSeries?: { seriesWorks(ref: string): Promise<WorkItem[]> };
+  /** NYT bestseller-list source (undefined until NYT_API_KEY is set). */
+  nytList?: { listWorks(ref: string): Promise<WorkItem[]> };
 }
 
 /** Wire the builder sources whose env is present (validated at use, not boot). */
@@ -55,6 +58,9 @@ export function createBuilderContext(
   const ctx: BuilderContext = {};
   if (config.hardcoverToken !== undefined) {
     ctx.hardcoverSeries = new HardcoverSeriesSource({ token: config.hardcoverToken, cache, log });
+  }
+  if (config.nytApiKey !== undefined) {
+    ctx.nytList = new NytListSource({ apiKey: config.nytApiKey, cache, log });
   }
   return ctx;
 }
@@ -75,6 +81,15 @@ export function builderInfos(ctx: BuilderContext): BuilderInfo[] {
       ref: 'a Hardcover series id or slug',
       available: ctx.hardcoverSeries !== undefined,
       ...(ctx.hardcoverSeries === undefined ? { note: 'set HARDCOVER_TOKEN to enable' } : {}),
+    },
+    {
+      type: 'nyt_list',
+      description:
+        'A New York Times bestseller list, ordered by rank. Matched works become the collection; ' +
+        'missing works flow to LazyLibrarian when acquisition is enabled (chase the current list).',
+      ref: 'a NYT list_name_encoded slug (e.g. hardcover-fiction, combined-print-and-e-book-fiction)',
+      available: ctx.nytList !== undefined,
+      ...(ctx.nytList === undefined ? { note: 'set NYT_API_KEY to enable' } : {}),
     },
   ];
 }
@@ -100,6 +115,12 @@ export async function resolveBuilder(recipe: Recipe, ctx: BuilderContext): Promi
         );
       }
       return ctx.hardcoverSeries.seriesWorks(String(recipe.builder.ref));
+    }
+    case 'nyt_list': {
+      if (!ctx.nytList) {
+        throw new Error('the nyt_list builder needs NYT_API_KEY (validated at use, not at boot)');
+      }
+      return ctx.nytList.listWorks(recipe.builder.ref);
     }
   }
 }

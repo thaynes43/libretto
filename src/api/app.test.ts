@@ -265,7 +265,11 @@ describe('API', () => {
       const { builders: builderList } = (await builders.json()) as {
         builders: { type: string }[];
       };
-      expect(builderList.map((b) => b.type)).toEqual(['static_ids', 'hardcover_series']);
+      expect(builderList.map((b) => b.type)).toEqual([
+        'static_ids',
+        'hardcover_series',
+        'nyt_list',
+      ]);
       const targetsRes = await app.request('/api/targets', { headers: auth });
       expect(((await targetsRes.json()) as { targets: unknown[] }).targets).toHaveLength(2);
     });
