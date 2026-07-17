@@ -43,7 +43,17 @@ interface AbsLibrary {
 
 interface AbsLibraryItem {
   id: string;
-  media?: { metadata?: { title?: string; isbn?: string | null; asin?: string | null } };
+  media?: {
+    metadata?: {
+      title?: string;
+      isbn?: string | null;
+      asin?: string | null;
+      // Minified book metadata carries the flattened authorName ("A, B"); the
+      // full shape has authors[].name. Both feed the D-04 title-fallback guard.
+      authorName?: string | null;
+      authors?: { name?: string | null }[];
+    };
+  };
 }
 
 interface AbsCollection {
@@ -93,10 +103,12 @@ export class AbsTarget implements TargetClient {
       );
       for (const item of results) {
         const metadata = item.media?.metadata ?? {};
+        const authors = absAuthors(metadata);
         items.push({
           id: item.id,
           title: metadata.title ?? '',
           identifiers: normalizeIdentifiers([metadata.isbn, metadata.asin]),
+          ...(authors.length > 0 ? { authors } : {}),
         });
       }
       if (results.length === 0 || items.length >= total) break;
@@ -175,4 +187,18 @@ export class AbsTarget implements TargetClient {
 
 function sameOrder(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((value, index) => value === b[index]);
+}
+
+/** Author names from ABS book metadata: prefer authors[].name, fall back to the flattened authorName. */
+function absAuthors(
+  metadata: NonNullable<NonNullable<AbsLibraryItem['media']>['metadata']>,
+): string[] {
+  const structured = (metadata.authors ?? [])
+    .map((author) => author.name?.trim())
+    .filter((name): name is string => !!name && name.length > 0);
+  if (structured.length > 0) return structured;
+  return (metadata.authorName ?? '')
+    .split(',')
+    .map((name) => name.trim())
+    .filter((name) => name.length > 0);
 }

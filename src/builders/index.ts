@@ -16,6 +16,14 @@ export interface WorkItem {
   identifiers: string[];
   /** Human-readable handle for the missing report (title when known, else the id). */
   label: string;
+  /**
+   * Clean work title for the conservative D-04 title fallback (distinct from the
+   * decorated `label`). Undefined when the builder has no title to offer (e.g.
+   * static_ids), which simply means this work never participates in the fallback.
+   */
+  title?: string;
+  /** Author names for the fallback's author guard, when the builder supplies them. */
+  authors?: string[];
 }
 
 export interface BuilderInfo {

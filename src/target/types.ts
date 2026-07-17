@@ -22,6 +22,12 @@ export interface TargetItem {
    * the real builders.
    */
   identifiers: string[];
+  /**
+   * Author names, when the target exposes them, for the conservative D-04 title
+   * fallback's author guard. Undefined/empty means the fallback leans on
+   * full-title equality alone (Kavita series carry no author today; ABS does).
+   */
+  authors?: string[];
 }
 
 export interface TargetCollection {

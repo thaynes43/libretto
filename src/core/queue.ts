@@ -78,7 +78,7 @@ export class RunQueue {
           log.error({ recipeId: recipe.id, err: error }, 'recipe reconcile failed');
           results.push({
             recipeId: recipe.id,
-            counts: { matched: 0, written: 0, added: 0, removed: 0, missing: 0 },
+            counts: { matched: 0, matchedByTitle: 0, written: 0, added: 0, removed: 0, missing: 0 },
             missing: [],
             error: message,
           });

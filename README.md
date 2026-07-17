@@ -21,11 +21,22 @@ So the marker lives in the targets everywhere, and the sidecar ownership file th
 
 ### Identifier matching on Kavita, resolved
 
-Kavita exposes ISBNs per **chapter** (that is, per book file), not per series: `GET /api/Series/volumes?seriesId=` and collect each chapter's `isbn`. Libretto does that per series and caches the result on disk (keyed by series id plus page count, so content changes refresh it). One honest caveat: Kavita only parses an epub ISBN when the OPF `<dc:identifier>` carries `opf:scheme="ISBN"` or an `isbn:`/`urn:isbn:` prefix it can validate. EPUB3 files without the scheme attribute yield no ISBN in Kavita, and such series can never match a recipe; the works they would have matched appear in `missing[]` instead. Fixing the epub metadata (or re-tagging with a tool that writes the scheme attribute) is the remedy.
+Kavita exposes ISBNs per **chapter** (that is, per book file), not per series: `GET /api/Series/volumes?seriesId=` and collect each chapter's `isbn`. Libretto does that per series and caches the result on disk (keyed by series id plus page count, so content changes refresh it). One honest caveat: Kavita only parses an epub ISBN when the OPF `<dc:identifier>` carries `opf:scheme="ISBN"` or an `isbn:`/`urn:isbn:` prefix it can validate. EPUB3 files without the scheme attribute yield no ISBN in Kavita, so such series cannot match on identifier alone. The conservative title fallback below recovers most of them; the rest appear in `missing[]`, and fixing the epub metadata (or re-tagging with a tool that writes the scheme attribute) is the permanent remedy.
 
 Audiobookshelf is simpler: item metadata carries `isbn` and `asin` directly in the standard listing, no per-item fetches.
 
-Matching is identifier-exact on both sides (ISBN-10 is losslessly converted to ISBN-13; ASINs are uppercased). There is no title fuzz: a work either matches by identifier or lands in `missing[]`.
+Matching is identifier-exact on both sides first (ISBN-10 is losslessly converted to ISBN-13; ASINs are uppercased). There is no title _fuzz_ — no edit-distance, no "close enough".
+
+### Conservative title fallback (D-04)
+
+Identifier matching is the ceiling only when both sides expose scheme'd identifiers, and Kavita epubs often do not. So when — and only when — a work finds no identifier match, Libretto tries one narrow fallback: a **noise-stripped exact full-title match**, guarded by author agreement, borrowing the conservative-pairing doctrine from the haynesnetwork ADR-065 book matcher. The rules that keep it honest:
+
+- **Full-title equality after noise stripping** (case, diacritics, punctuation, a leading article, and bracketed edition/series tags folded away), never substring or prefix — so the franchise umbrella "Harry Potter" never absorbs "Harry Potter and the Chamber of Secrets".
+- **Ambiguity is refused, never guessed.** If a normalized title maps to two or more distinct library items, or the author guard can't leave a single survivor, the work goes to `missing[]` rather than mispair.
+- **Author is a guard applied when both sides supply it** (Audiobookshelf does; Kavita series carry none today): disjoint authors veto a title match; when either side has no author the full-title equality stands on its own.
+- **Still no fuzz.** A US/UK divergence like _Sorcerer's Stone_ vs _Philosopher's Stone_ stays an honest miss.
+
+Title-recovered items are **flagged** in the run: `counts.matchedByTitle` reports how many of `counts.matched` came from the fallback rather than an identifier (and each is logged with `matchedVia: "title"`). The fallback is **default-on**; set `variables.titleFallback: false` on a recipe to pin it to identifier-only matching.
 
 ## Quick start
 
@@ -134,6 +145,7 @@ variables:
   syncMode: sync # sync reconciles membership and order; append only ever adds
   ordered: true # ordered on kavita = reading list; unordered = collection
   acquisitionEnabled: false # reserved for the LazyLibrarian leg (M3)
+  titleFallback: true # D-04: conservative title match when identifiers miss (default true)
   schedule: '0 5 * * *' # cron expression, or manual for API-only runs
 enabled: true
 ```

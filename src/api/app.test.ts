@@ -205,6 +205,7 @@ describe('API', () => {
       expect(run.status).toBe('warn'); // isbn:404 is missing
       expect(run.recipes[0]?.counts).toEqual({
         matched: 2,
+        matchedByTitle: 0,
         written: 2,
         added: 2,
         removed: 0,
