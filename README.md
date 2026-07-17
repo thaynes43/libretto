@@ -180,3 +180,5 @@ Node 22+, [pnpm](https://pnpm.io/). `pnpm install`, then:
 ## License
 
 [AGPL-3.0](LICENSE). If you run a modified Libretto as a service, share your changes.
+
+> Container images publish to `ghcr.io/thaynes43/libretto` (`latest` and `sha` tags) on every merge to main.
