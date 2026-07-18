@@ -1,12 +1,12 @@
 import { acquireMissing, type AcquireContext } from '../acquire/acquire.js';
 import type { LlFormat } from '../acquire/lazylibrarian.js';
-import { resolveBuilder, type BuilderContext, type WorkItem } from '../builders/index.js';
-import { TitleIndex } from '../matching/title.js';
+import { resolveBuilder, type BuilderContext } from '../builders/index.js';
 import type { Recipe } from '../recipes/schema.js';
 import type { RecipeRunResult } from '../runs/store.js';
 import { buildCollectionDescription, recipeIdFromDescription } from '../target/marker.js';
-import type { TargetClient, TargetItem } from '../target/types.js';
+import type { TargetClient } from '../target/types.js';
 import type { Logger } from '../logger.js';
+import { matchWorks } from './match.js';
 
 /**
  * Reconcile one recipe against its target (DESIGN-037 D-04/D-07/D-08, amended
@@ -35,56 +35,23 @@ export async function reconcileRecipe(
   const works = await resolveBuilder(recipe, builderCtx);
   const items = await target.listItems(libraryId);
 
-  const byIdentifier = new Map<string, TargetItem>();
-  for (const item of items) {
-    for (const identifier of item.identifiers) {
-      if (!byIdentifier.has(identifier)) byIdentifier.set(identifier, item);
-    }
-  }
-
   // D-04 conservative title fallback (default on, per-recipe opt-out via
   // variables.titleFallback). Identifier matching stays the ceiling; only works
   // it leaves unmatched are offered to the noise-stripped exact-title matcher,
-  // which refuses ambiguity rather than guess. Title matches are FLAGGED
-  // (matchedVia) so the run can report them distinctly from identifier matches.
-  const titleFallbackEnabled = recipe.variables.titleFallback;
-  const titleIndex = titleFallbackEnabled ? new TitleIndex(items) : undefined;
-
-  const matchedIds: string[] = [];
-  const matchedSeen = new Set<string>();
-  const missing: string[] = [];
-  // The full unmatched works (not just labels) feed the M3 acquisition leg.
-  const missingWorks: WorkItem[] = [];
-  let matchedByTitle = 0;
-  for (const work of works) {
-    let matchedVia: 'identifier' | 'title' | undefined;
-    let item = work.identifiers
-      .map((identifier) => byIdentifier.get(identifier))
-      .find((candidate) => candidate !== undefined);
-    if (item) {
-      matchedVia = 'identifier';
-    } else if (titleIndex) {
-      const candidate = titleIndex.match(work.title, work.authors, matchedSeen);
-      if (candidate) {
-        item = items.find((one) => one.id === candidate.id);
-        matchedVia = 'title';
-      }
-    }
-
-    if (!item) {
-      missing.push(work.label);
-      missingWorks.push(work);
-    } else if (!matchedSeen.has(item.id)) {
-      matchedSeen.add(item.id);
-      matchedIds.push(item.id);
-      if (matchedVia === 'title') {
-        matchedByTitle += 1;
-        log.info(
-          { recipeId: recipe.id, itemId: item.id, work: work.label, matchedVia },
-          'matched by conservative title fallback (no identifier hit)',
-        );
-      }
-    }
+  // which refuses ambiguity rather than guess. The shared matcher (core/match.ts)
+  // is the single source both this reconcile and the missing endpoint use, so a
+  // book counted `missing` here is exactly one the endpoint reports.
+  const { matchedIds, matchedSeen, matchedByTitle, missingWorks } = matchWorks(
+    works,
+    items,
+    recipe.variables.titleFallback,
+  );
+  const missing = missingWorks.map((work) => work.label);
+  if (matchedByTitle > 0) {
+    log.info(
+      { recipeId: recipe.id, matchedByTitle },
+      'matched by conservative title fallback (no identifier hit)',
+    );
   }
 
   const collections = await target.listCollections(libraryId);

@@ -54,15 +54,20 @@ LazyLibrarian exposes a query-string command API. The commands and their real be
 
 - **`getAllBooks`** returns the whole book table — `BookID` (a Google Books volume id), `BookName`, `BookIsbn`, and the two per-format statuses `Status` (eBook) and `AudioStatus` (AudioBook). Reliable: it reads LazyLibrarian's own database, no Google Books call.
 - **`queueBook&id=&type=eBook|AudioBook`** marks a format Wanted; **`searchBook&id=&type=`** fires the hunt. Both operate on a `BookID` already in the database, so they are the reliable, Google-Books-free drive.
-- **`addBookByISBN&isbn=`** introduces a book LazyLibrarian does not yet know, resolving the ISBN on **LazyLibrarian's own Google Books budget**. Libretto has no Google Books key and deliberately never acquires one — statelessness plus quota ownership keep that dependency on LazyLibrarian's side. This path is best-effort: the deployed instance's anonymous quota is throttled and often answers `No results for <isbn>`, which Libretto treats as a soft skip and retries on a later run.
-- `findBook` / `findAuthor` (LazyLibrarian's live Google Books search) return `[]` for every query in this deployment, so a keyless "search then add" path is not viable. That is why acquisition is keyed on `getAllBooks` + `addBookByISBN` rather than a search.
+- **`addBook&id=<volumeId>`** introduces a book by a known Google Books **volume id** — a specific, exact ingest that does not depend on LazyLibrarian's own keyless ISBN search. This is the path the **resolve broker** drives (see below).
+- **`addBookByISBN&isbn=`** introduces a book by ISBN, resolving it on **LazyLibrarian's own Google Books budget**. Best-effort: the deployed instance's anonymous quota is throttled and often answers `No results for <isbn>`, which Libretto treats as a soft skip and retries on a later run. Kept as the **fallback** for when the resolve broker is unconfigured or returns no match.
+- `findBook` / `findAuthor` (LazyLibrarian's live Google Books search) return `[]` for every query in this deployment, so a keyless "search then add" path is not viable.
+
+#### The resolve broker (ISBN-first) — the M3 resolution fix
+
+The keyless `addBookByISBN` path resolves close to nothing in practice (LazyLibrarian's anonymous Google Books quota is throttled), so acquisition of _new_ books stalled. The **resolve broker** owns reliable ISBN → Google-Books-volume-id resolution **Libretto-side**, mirroring the haynesnetwork hardened resolver: it tries `isbn:<isbn>` **first** (exact, one call), then a **guarded** `intitle:+inauthor:` fallback (a title-token coverage guard and a surname author guard, so a fuzzy leg can never resolve a _wrong_ work — a guard failure is an honest null). It requires a Google Books API key (`GOOGLE_BOOKS_API_KEY`); with no key it is disabled and acquisition keeps the prior `addBookByISBN` behavior (no regression). When it resolves, Libretto adds the want with `addBook(<volumeId>)` — the reliable ingest — instead of the throttled ISBN search. Exposed as a reusable service at `POST /api/resolve`.
 
 Per missing work, per run:
 
-1. **Resolve** it to a LazyLibrarian book — conservatively, exactly like the D-04 title fallback: normalized ISBN first, then noise-stripped title (with the author guard); **ambiguity is skipped, never a wrong add**.
+1. **Resolve** it to a LazyLibrarian book already in the database — conservatively, exactly like the D-04 title fallback: normalized ISBN first, then noise-stripped title (with the author guard); **ambiguity is skipped, never a wrong add**.
 2. **Already known and being acquired or held** (the format is `Wanted`, `Snatched`, `Open`, `Have`, `Matched`, or `Ignored`) → skip. Re-runs never duplicate.
 3. **Known but the format is `Skipped`** (or untracked) → `queueBook` + `searchBook` for that format. This is the reliable drive.
-4. **Unknown, with an ISBN** → `addBookByISBN`. On success the book enters LazyLibrarian and is driven to a search on a later run (once `getAllBooks` reveals its `BookID`). Unknown with no ISBN (ASIN-only) → skipped with a logged reason.
+4. **Unknown** → the **resolve broker** maps it (ISBN-first, guarded title fallback) to a Google Books volume id and `addBook(<volumeId>)`. If the broker is unconfigured or finds no match but the work has an ISBN → `addBookByISBN` fallback. No volume id and no ISBN → skipped with a logged reason. On success the book enters LazyLibrarian and is driven to a search on a later run (once `getAllBooks` reveals its `BookID`).
 
 ### Pacing
 
@@ -153,20 +158,21 @@ Everything lives on the `/config` volume (override with `CONFIG_DIR`):
 
 Environment variables (all connection settings are validated at use, not at boot):
 
-| Variable                                     | Purpose                                                                                                                                                                                                 |
-| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `LIBRETTO_API_KEY`                           | Bearer key for everything under `/api`. Unset means the API is locked.                                                                                                                                  |
-| `KAVITA_URL`, `KAVITA_API_KEY`               | Kavita connection. The API key is a Kavita user API key; Libretto authenticates with it via the plugin flow.                                                                                            |
-| `ABS_URL`, `ABS_TOKEN`                       | Audiobookshelf connection. A user API token or an API key, sent as a Bearer token.                                                                                                                      |
-| `HARDCOVER_TOKEN`                            | [Hardcover](https://hardcover.app/) token for the `hardcover_series` builder. Tokens expire each January 1st.                                                                                           |
-| `LIBRETTO_FAKE_TARGET`                       | `1` serves the in-memory fake target for both server kinds (demo and tests).                                                                                                                            |
-| `CONFIG_DIR`                                 | Config volume path, default `/config`.                                                                                                                                                                  |
-| `PORT`                                       | HTTP port, default `8080`.                                                                                                                                                                              |
-| `LOG_LEVEL`                                  | [pino](https://getpino.io/) level, default `info`.                                                                                                                                                      |
-| `LAZYLIBRARIAN_URL`, `LAZYLIBRARIAN_API_KEY` | [LazyLibrarian](https://lazylibrarian.gitlab.io/) connection for the acquisition leg (M3). The API key is the LazyLibrarian API key from its settings.                                                  |
-| `LIBRETTO_ACQUISITION_CAP_PER_RUN`           | Max acquisition actions (LazyLibrarian adds + queue-drives) per recipe run. Default `10`.                                                                                                               |
-| `LIBRETTO_ACQUISITION_INTERVAL_MS`           | Spacing between LazyLibrarian write calls, in ms (estate politeness). Default `3000`.                                                                                                                   |
-| `NYT_API_KEY`                                | [NYT Books API](https://developer.nytimes.com/docs/books-product/1/overview) key for the `nyt_list` builder. Free tier is roughly 500 requests/day and 5/minute; Libretto paces and caches accordingly. |
+| Variable                                     | Purpose                                                                                                                                                                                                            |
+| -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `LIBRETTO_API_KEY`                           | Bearer key for everything under `/api`. Unset means the API is locked.                                                                                                                                             |
+| `KAVITA_URL`, `KAVITA_API_KEY`               | Kavita connection. The API key is a Kavita user API key; Libretto authenticates with it via the plugin flow.                                                                                                       |
+| `ABS_URL`, `ABS_TOKEN`                       | Audiobookshelf connection. A user API token or an API key, sent as a Bearer token.                                                                                                                                 |
+| `HARDCOVER_TOKEN`                            | [Hardcover](https://hardcover.app/) token for the `hardcover_series` builder. Tokens expire each January 1st.                                                                                                      |
+| `LIBRETTO_FAKE_TARGET`                       | `1` serves the in-memory fake target for both server kinds (demo and tests).                                                                                                                                       |
+| `CONFIG_DIR`                                 | Config volume path, default `/config`.                                                                                                                                                                             |
+| `PORT`                                       | HTTP port, default `8080`.                                                                                                                                                                                         |
+| `LOG_LEVEL`                                  | [pino](https://getpino.io/) level, default `info`.                                                                                                                                                                 |
+| `LAZYLIBRARIAN_URL`, `LAZYLIBRARIAN_API_KEY` | [LazyLibrarian](https://lazylibrarian.gitlab.io/) connection for the acquisition leg (M3). The API key is the LazyLibrarian API key from its settings.                                                             |
+| `GOOGLE_BOOKS_API_KEY`                       | Google Books API key for the ISBN-first resolve broker (the M3 resolution fix). Unset ⇒ the broker is disabled and acquisition falls back to `addBookByISBN`. `GOOGLE_BOOKS_URL` overrides the base URL for tests. |
+| `LIBRETTO_ACQUISITION_CAP_PER_RUN`           | Max acquisition actions (LazyLibrarian adds + queue-drives) per recipe run. Default `10`.                                                                                                                          |
+| `LIBRETTO_ACQUISITION_INTERVAL_MS`           | Spacing between LazyLibrarian write calls, in ms (estate politeness). Default `3000`.                                                                                                                              |
+| `NYT_API_KEY`                                | [NYT Books API](https://developer.nytimes.com/docs/books-product/1/overview) key for the `nyt_list` builder. Free tier is roughly 500 requests/day and 5/minute; Libretto paces and caches accordingly.            |
 
 ### Notes on the target accounts
 
@@ -229,18 +235,20 @@ Because `nyt_list` re-resolves to the _current_ list on every run, **turning `ac
 
 All routes except `/health` require `Authorization: Bearer $LIBRETTO_API_KEY`. This API is the contract surface other tools bind to; Libretto itself is driven by YAML and logs, Kometa-style.
 
-| Method and path                         | What it does                                                                                                    |
-| --------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `GET /health`                           | Liveness, no auth.                                                                                              |
-| `GET /api/recipes`                      | All recipes plus validation issues for broken files.                                                            |
-| `GET /api/recipes/:id`                  | One recipe.                                                                                                     |
-| `PUT /api/recipes/:id`                  | Validate and save (the explicit write; the only recipe writer).                                                 |
-| `DELETE /api/recipes/:id`               | Delete the file; the produced collection is orphaned.                                                           |
-| `POST /api/validate`                    | `{ recipe: {...} }` or `{ all: true }`, returns `issues[]`, mutates nothing.                                    |
-| `POST /api/apply`                       | `{ scope: "all" \| "<recipeId>" }`, returns `{ runId }`.                                                        |
-| `GET /api/runs`, `GET /api/runs/:id`    | Run history (last 50) with per-recipe counts, `missing[]`, and (when a recipe acquires) an `acquisition` block. |
-| `GET /api/collections`                  | Produced collections, read back from the targets by marker.                                                     |
-| `GET /api/builders`, `GET /api/targets` | Discovery: builder types (with availability) and target status.                                                 |
+| Method and path                          | What it does                                                                                                                                                                                       |
+| ---------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /health`                            | Liveness, no auth.                                                                                                                                                                                 |
+| `GET /api/recipes`                       | All recipes plus validation issues for broken files.                                                                                                                                               |
+| `GET /api/recipes/:id`                   | One recipe.                                                                                                                                                                                        |
+| `PUT /api/recipes/:id`                   | Validate and save (the explicit write; the only recipe writer).                                                                                                                                    |
+| `DELETE /api/recipes/:id`                | Delete the file; the produced collection is orphaned.                                                                                                                                              |
+| `POST /api/validate`                     | `{ recipe: {...} }` or `{ all: true }`, returns `issues[]`, mutates nothing.                                                                                                                       |
+| `POST /api/apply`                        | `{ scope: "all" \| "<recipeId>" }`, returns `{ runId }`.                                                                                                                                           |
+| `GET /api/runs`, `GET /api/runs/:id`     | Run history (last 50) with per-recipe counts, `missing[]`, and (when a recipe acquires) an `acquisition` block.                                                                                    |
+| `GET /api/collections`                   | Produced collections, read back from the targets by marker.                                                                                                                                        |
+| `GET /api/collections/:recipeId/missing` | The recipe's wanted-but-unheld member **identities** (`{ label, title, authors, isbn, identifiers }[]`) with held/missing counts — enough for a consumer to mint one request per missing book.     |
+| `POST /api/resolve`                      | Resolve `{ isbn?, title?, author?, identifiers? }` to a Google Books volume id (ISBN-first, guarded title fallback). `{ resolved: null }` on no match; `503` when `GOOGLE_BOOKS_API_KEY` is unset. |
+| `GET /api/builders`, `GET /api/targets`  | Discovery: builder types (with availability) and target status.                                                                                                                                    |
 
 ## Development
 

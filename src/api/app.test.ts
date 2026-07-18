@@ -44,6 +44,7 @@ describe('API', () => {
       scheduler,
       targets,
       builders: {},
+      resolve: undefined,
       log: silentLogger,
     });
   });
@@ -88,6 +89,7 @@ describe('API', () => {
         scheduler: s,
         targets,
         builders: {},
+        resolve: undefined,
         log: silentLogger,
       });
       const res = await lockedApp.request('/api/recipes', { headers: auth });
@@ -256,6 +258,96 @@ describe('API', () => {
     it('404s an unknown run id', async () => {
       const res = await app.request('/api/runs/nope', { headers: auth });
       expect(res.status).toBe(404);
+    });
+  });
+
+  describe('member-level missing', () => {
+    it('reports the wanted-but-unheld member identities for a recipe', async () => {
+      const recipe = makeRecipe({
+        id: 'missing-recipe',
+        builder: { type: 'static_ids', ref: ['isbn:1', 'isbn:3', 'isbn:99'] },
+      });
+      const { id: _id, ...body } = recipe;
+      await app.request('/api/recipes/missing-recipe', {
+        method: 'PUT',
+        headers: jsonHeaders,
+        body: JSON.stringify(body),
+      });
+
+      const res = await app.request('/api/collections/missing-recipe/missing', { headers: auth });
+      expect(res.status).toBe(200);
+      const payload = (await res.json()) as {
+        recipeId: string;
+        total: number;
+        heldCount: number;
+        missingCount: number;
+        missing: { label: string; isbn: string | null; identifiers: string[] }[];
+      };
+      expect(payload.recipeId).toBe('missing-recipe');
+      expect(payload.total).toBe(3);
+      expect(payload.heldCount).toBe(2); // isbn:1, isbn:3 seeded in the fake library
+      expect(payload.missingCount).toBe(1);
+      expect(payload.missing).toEqual([
+        { label: 'isbn:99', title: null, authors: [], isbn: '99', identifiers: ['isbn:99'] },
+      ]);
+    });
+
+    it('404s an unknown recipe id', async () => {
+      const res = await app.request('/api/collections/nope/missing', { headers: auth });
+      expect(res.status).toBe(404);
+    });
+  });
+
+  describe('resolve broker', () => {
+    it('503s when the broker is not configured', async () => {
+      const res = await app.request('/api/resolve', {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ isbn: '9780441172719', title: 'Dune' }),
+      });
+      expect(res.status).toBe(503);
+    });
+
+    it('resolves an ISBN to a volume id when the broker is wired', async () => {
+      const tmp = await makeTempDir();
+      const config = loadConfig({
+        CONFIG_DIR: tmp.dir,
+        LIBRETTO_API_KEY: KEY,
+      } as NodeJS.ProcessEnv);
+      const recipeStore = new RecipeStore(config.recipesDir);
+      const runStore = new RunStore(config.runsFile);
+      const targets = registryFor(makeSeededTarget());
+      const q = new RunQueue({ recipeStore, runStore, targets, builders: {}, log: silentLogger });
+      const s = new Scheduler(recipeStore, q, silentLogger);
+      const brokerApp = createApp({
+        config,
+        recipeStore,
+        runStore,
+        queue: q,
+        scheduler: s,
+        targets,
+        builders: {},
+        resolve: {
+          resolve: () =>
+            Promise.resolve({
+              volumeId: 'VOL_DUNE',
+              isbn13: '9780441172719',
+              via: 'isbn' as const,
+            }),
+        },
+        log: silentLogger,
+      });
+      const res = await brokerApp.request('/api/resolve', {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ isbn: '9780441172719', title: 'Dune' }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        resolved: { volumeId: 'VOL_DUNE', isbn13: '9780441172719', via: 'isbn' },
+      });
+      s.stop();
+      await tmp.cleanup();
     });
   });
 

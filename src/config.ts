@@ -36,6 +36,13 @@ export interface AppConfig {
   lazyLibrarian: ServiceEndpoint | undefined;
   hardcoverToken: string | undefined;
   nytApiKey: string | undefined;
+  /**
+   * Google Books API key for the ISBN-first resolve broker (M3 direction-a). Absent ⇒ the broker is
+   * disabled and acquisition keeps its prior addBookByISBN behavior (validated at use, not at boot).
+   */
+  googleBooksApiKey: string | undefined;
+  /** Google Books base URL (override for tests/hermetic e2e; default the real API). */
+  googleBooksUrl: string | undefined;
   /** Max acquisition actions (LL adds + queue-drives) per recipe run (M3 pacing). */
   acquisitionCapPerRun: number;
   /** Spacing between LazyLibrarian write calls, ms (estate politeness). */
@@ -68,6 +75,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     lazyLibrarian: endpoint(env.LAZYLIBRARIAN_URL, env.LAZYLIBRARIAN_API_KEY),
     hardcoverToken: env.HARDCOVER_TOKEN || undefined,
     nytApiKey: env.NYT_API_KEY || undefined,
+    googleBooksApiKey: env.GOOGLE_BOOKS_API_KEY || undefined,
+    googleBooksUrl: env.GOOGLE_BOOKS_URL || undefined,
     acquisitionCapPerRun: positiveInt(env.LIBRETTO_ACQUISITION_CAP_PER_RUN, 10),
     acquisitionIntervalMs: positiveInt(env.LIBRETTO_ACQUISITION_INTERVAL_MS, 3000),
   };
