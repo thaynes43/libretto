@@ -43,7 +43,7 @@ const targetLibrarySchema = z.strictObject({
  * provenance-derivation contract keeps the type string exactly `nyt_list`.
  * wikidata_award arrives later.
  */
-const builderSchema = z.discriminatedUnion('type', [
+export const builderSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('static_ids'),
     ref: z.array(z.string().min(1)).min(1),

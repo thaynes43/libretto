@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { NytListSource, toTitleCase } from './nyt.js';
+import { NYT_LIST_NAMES, NytListSource, searchNytLists, toTitleCase } from './nyt.js';
 import { resolveBuilder } from './index.js';
 import { DiskCache } from '../cache/disk.js';
 import { makeRecipe, makeTempDir, silentLogger } from '../testing/fixtures.js';
@@ -189,17 +189,49 @@ describe('NytListSource', () => {
 describe('resolveBuilder nyt_list', () => {
   it('fails honestly when NYT_API_KEY is not configured', async () => {
     const recipe = makeRecipe({ builder: { type: 'nyt_list', ref: 'hardcover-fiction' } });
-    await expect(resolveBuilder(recipe, {})).rejects.toThrow(
+    await expect(resolveBuilder(recipe.builder, {})).rejects.toThrow(
       'the nyt_list builder needs NYT_API_KEY',
     );
   });
 
   it('delegates to the wired nyt source', async () => {
     const recipe = makeRecipe({ builder: { type: 'nyt_list', ref: 'hardcover-fiction' } });
-    const works = await resolveBuilder(recipe, {
+    const works = await resolveBuilder(recipe.builder, {
       nytList: { listWorks: (ref) => Promise.resolve([{ identifiers: [ref], label: ref }]) },
     });
     expect(works).toEqual([{ identifiers: ['hardcover-fiction'], label: 'hardcover-fiction' }]);
+  });
+});
+
+describe('searchNytLists', () => {
+  it('filters the curated list names by a display-name substring (case-insensitive)', () => {
+    const { results } = searchNytLists('fiction', 25);
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.every((r) => r.name.toLowerCase().includes('fiction'))).toBe(true);
+    expect(results).toContainEqual({ ref: 'hardcover-fiction', name: 'Hardcover Fiction' });
+  });
+
+  it('also matches on the encoded ref', () => {
+    const { results } = searchNytLists('young-adult', 25);
+    expect(results.every((r) => r.ref.includes('young-adult'))).toBe(true);
+    expect(results.length).toBeGreaterThan(0);
+  });
+
+  it('returns the whole set (capped) for a blank query', () => {
+    const { results, truncated } = searchNytLists('', 5);
+    expect(results).toHaveLength(5);
+    expect(truncated).toBe(true);
+    expect(results.length).toBeLessThan(NYT_LIST_NAMES.length);
+  });
+
+  it('reports truncated when more match than the limit', () => {
+    const wide = searchNytLists('', 100);
+    expect(wide.results).toHaveLength(NYT_LIST_NAMES.length);
+    expect(wide.truncated).toBe(false);
+  });
+
+  it('is empty for a no-match query', () => {
+    expect(searchNytLists('zzzznope', 25)).toEqual({ results: [], truncated: false });
   });
 });
 

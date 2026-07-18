@@ -100,3 +100,36 @@ export function toMissingMember(work: WorkItem): MissingMember {
     identifiers: work.identifiers,
   };
 }
+
+/**
+ * One resolved member's identity for the draft PREVIEW endpoint (M4 builder page). This is the
+ * full resolved membership a run would produce — NOT just the missing ones — so the app can split
+ * it into held vs missing against its own mirrors. `author` is the primary (first) author for a
+ * compact tile; `position` is the series position / list rank when the source exposes one.
+ */
+export interface PreviewMember {
+  /** The builder's human handle ("Wind and Truth (#5 in The Stormlight Archive)"). */
+  label: string;
+  /** Clean work title. */
+  title: string | null;
+  /** Primary author, when the builder supplied one. */
+  author: string | null;
+  /** Primary ISBN-13 (first isbn: identifier), when known. */
+  isbn: string | null;
+  /** Series position / list rank, when the source is ordered. */
+  position: number | null;
+  /** All normalized identifiers (isbn:/asin:/opaque) — the app's held-match keys. */
+  identifiers: string[];
+}
+
+/** Project a resolved WorkItem to its wire identity for the preview endpoint. */
+export function toPreviewMember(work: WorkItem): PreviewMember {
+  return {
+    label: work.label,
+    title: work.title ?? null,
+    author: work.authors?.[0] ?? null,
+    isbn: work.identifiers.find((id) => id.startsWith('isbn:'))?.slice('isbn:'.length) ?? null,
+    position: work.position ?? null,
+    identifiers: work.identifiers,
+  };
+}

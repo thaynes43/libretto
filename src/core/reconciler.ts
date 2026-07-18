@@ -32,7 +32,7 @@ export async function reconcileRecipe(
   acquire?: AcquireContext,
 ): Promise<RecipeRunResult> {
   const { libraryId } = recipe.targetLibrary;
-  const works = await resolveBuilder(recipe, builderCtx);
+  const works = await resolveBuilder(recipe.builder, builderCtx);
   const items = await target.listItems(libraryId);
 
   // D-04 conservative title fallback (default on, per-recipe opt-out via

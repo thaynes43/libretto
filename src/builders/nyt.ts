@@ -2,7 +2,58 @@ import type { DiskCache } from '../cache/disk.js';
 import { fetchJson, HttpError } from '../http.js';
 import { normalizeIdentifiers } from '../identifiers.js';
 import type { Logger } from '../logger.js';
-import type { WorkItem } from './index.js';
+import type { BuilderSearchResponse, WorkItem } from './index.js';
+
+/**
+ * The well-known NYT bestseller lists, by `list_name_encoded` (the value a recipe's ref
+ * must be) and display name. This is a STATIC, curated set — the M4 builder-page search over
+ * nyt_list filters it by substring rather than calling the NYT names endpoint on every
+ * keystroke (the free tier allows ~5 requests/minute). It covers the stable weekly lists plus
+ * the common monthlies; an unlisted-but-valid encoded slug still runs fine (the ref is free
+ * text — search is a convenience, not an allowlist). Verified against
+ * https://api.nytimes.com/svc/books/v3/lists/names.json (2026-07).
+ */
+export const NYT_LIST_NAMES: { ref: string; name: string }[] = [
+  { ref: 'combined-print-and-e-book-fiction', name: 'Combined Print & E-Book Fiction' },
+  { ref: 'combined-print-and-e-book-nonfiction', name: 'Combined Print & E-Book Nonfiction' },
+  { ref: 'hardcover-fiction', name: 'Hardcover Fiction' },
+  { ref: 'hardcover-nonfiction', name: 'Hardcover Nonfiction' },
+  { ref: 'trade-fiction-paperback', name: 'Paperback Trade Fiction' },
+  { ref: 'mass-market-monthly', name: 'Paperback Mass-Market Fiction (Monthly)' },
+  { ref: 'paperback-nonfiction', name: 'Paperback Nonfiction' },
+  { ref: 'advice-how-to-and-miscellaneous', name: 'Advice, How-To & Miscellaneous' },
+  { ref: 'childrens-middle-grade-hardcover', name: "Children's Middle Grade Hardcover" },
+  { ref: 'picture-books', name: "Children's Picture Books" },
+  { ref: 'series-books', name: "Children's Series" },
+  { ref: 'young-adult-hardcover', name: 'Young Adult Hardcover' },
+  { ref: 'audio-fiction', name: 'Audio Fiction' },
+  { ref: 'audio-nonfiction', name: 'Audio Nonfiction' },
+  { ref: 'business-books', name: 'Business (Monthly)' },
+  { ref: 'graphic-books-and-manga', name: 'Graphic Books & Manga (Monthly)' },
+  { ref: 'middle-grade-paperback-monthly', name: 'Middle Grade Paperback (Monthly)' },
+  { ref: 'young-adult-paperback-monthly', name: 'Young Adult Paperback (Monthly)' },
+  { ref: 'science', name: 'Science (Monthly)' },
+  { ref: 'sports', name: 'Sports & Fitness (Monthly)' },
+];
+
+/**
+ * Filter the curated NYT list names by a substring of the display name OR the encoded ref
+ * (case-insensitive). An empty query returns the whole set (capped) so the field can offer the
+ * lists as soon as the user focuses it. Bounded by `limit`.
+ */
+export function searchNytLists(query: string, limit: number): BuilderSearchResponse {
+  const q = query.trim().toLowerCase();
+  const matches =
+    q.length === 0
+      ? NYT_LIST_NAMES
+      : NYT_LIST_NAMES.filter(
+          (entry) => entry.name.toLowerCase().includes(q) || entry.ref.toLowerCase().includes(q),
+        );
+  return {
+    results: matches.slice(0, limit).map((entry) => ({ ref: entry.ref, name: entry.name })),
+    truncated: matches.length > limit,
+  };
+}
 
 /**
  * nyt_list builder (DESIGN-037 D-05, the acquisition-driven list): a New York
@@ -122,7 +173,9 @@ export class NytListSource {
     // Versioned key: bump v1 whenever the cached WorkItem shape changes so a live
     // pod does not serve pre-change entries for the full TTL (the hardcover v2
     // lesson). Short TTL suits weekly-refresh bestseller data.
-    const cacheKey = `nyt:list:v1:${ref}`;
+    // v2 adds WorkItem.position (rank) for the M4 member preview — bump so a live pod does not
+    // serve position-less v1 entries for the full TTL (the hardcover v2 lesson).
+    const cacheKey = `nyt:list:v2:${ref}`;
     const cached = await this.options.cache.get<WorkItem[]>(cacheKey);
     if (cached !== undefined) {
       this.options.log.debug({ ref, works: cached.length }, 'nyt: list cache hit');
@@ -158,6 +211,7 @@ export class NytListSource {
         label: `${title ?? identifiers[0] ?? 'unknown'} (#${rank} on ${listDisplay})`,
         ...(title ? { title } : {}),
         ...(author ? { authors: [author] } : {}),
+        ...(typeof book.rank === 'number' ? { position: book.rank } : {}),
       });
     }
 
