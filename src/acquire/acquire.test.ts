@@ -203,4 +203,73 @@ describe('acquireMissing', () => {
     expect(counts).toEqual({ queued: 0, added: 0, skipped: 0, errors: 0 });
     expect(getAll).not.toHaveBeenCalled();
   });
+
+  describe('with the resolve broker (M3 direction-a)', () => {
+    it('resolves ISBN -> volume id and adds via addBook, NOT addBookByISBN', async () => {
+      const ll = new FakeLazyLibrarian([]);
+      const resolve = {
+        resolve: vi.fn(() =>
+          Promise.resolve({ volumeId: 'VOL_DUNE', isbn13: '9780441172719', via: 'isbn' as const }),
+        ),
+      };
+      const counts = await acquireMissing(
+        'r',
+        [work({ identifiers: ['isbn:9780441172719'], label: 'Dune', title: 'Dune' })],
+        'ebook',
+        ctxFor(ll, { resolve }),
+        silentLogger,
+      );
+      expect(counts).toEqual({ queued: 0, added: 1, skipped: 0, errors: 0 });
+      expect(ll.calls).toEqual([{ cmd: 'addBook', id: 'VOL_DUNE' }]);
+      expect(resolve.resolve).toHaveBeenCalledWith(
+        expect.objectContaining({ isbn: '9780441172719', title: 'Dune' }),
+      );
+    });
+
+    it('adds an ASIN-only want the broker resolves by title (was an honest skip before)', async () => {
+      const ll = new FakeLazyLibrarian([]);
+      const resolve = {
+        resolve: vi.fn(() =>
+          Promise.resolve({ volumeId: 'VOL_AO', isbn13: null, via: 'title' as const }),
+        ),
+      };
+      const counts = await acquireMissing(
+        'r',
+        [work({ identifiers: ['asin:B0071IHYRW'], label: 'Audio Only', title: 'Audio Only' })],
+        'audiobook',
+        ctxFor(ll, { resolve }),
+        silentLogger,
+      );
+      expect(counts.added).toBe(1);
+      expect(ll.calls).toEqual([{ cmd: 'addBook', id: 'VOL_AO' }]);
+    });
+
+    it('falls back to addBookByISBN when the broker resolves nothing but an ISBN exists', async () => {
+      const ll = new FakeLazyLibrarian([]);
+      const resolve = { resolve: vi.fn(() => Promise.resolve(null)) };
+      const counts = await acquireMissing(
+        'r',
+        [work({ identifiers: ['isbn:9780441172719'], label: 'Dune', title: 'Dune' })],
+        'ebook',
+        ctxFor(ll, { resolve }),
+        silentLogger,
+      );
+      expect(counts.added).toBe(1);
+      expect(ll.calls).toEqual([{ cmd: 'addBookByISBN', isbn: '9780441172719' }]);
+    });
+
+    it('skips (no LL write) when the broker resolves nothing and there is no ISBN', async () => {
+      const ll = new FakeLazyLibrarian([]);
+      const resolve = { resolve: vi.fn(() => Promise.resolve(null)) };
+      const counts = await acquireMissing(
+        'r',
+        [work({ identifiers: ['asin:B0071IHYRW'], label: 'Audio Only', title: 'Audio Only' })],
+        'audiobook',
+        ctxFor(ll, { resolve }),
+        silentLogger,
+      );
+      expect(counts.skipped).toBe(1);
+      expect(ll.calls).toEqual([]);
+    });
+  });
 });

@@ -16,6 +16,9 @@ import type { RunStore } from '../runs/store.js';
 import { recipeIdFromDescription } from '../target/marker.js';
 import type { TargetRegistry } from '../target/registry.js';
 import { TargetUnavailableError } from '../target/types.js';
+import { resolveBuilder } from '../builders/index.js';
+import { matchWorks, toMissingMember } from '../core/match.js';
+import type { ResolveBroker } from '../resolve/broker.js';
 
 export interface AppDeps {
   config: AppConfig;
@@ -25,8 +28,17 @@ export interface AppDeps {
   scheduler: Scheduler;
   targets: TargetRegistry;
   builders: BuilderContext;
+  /** ISBN-first resolve broker (M3 direction-a); undefined when GOOGLE_BOOKS_API_KEY is unset. */
+  resolve: ResolveBroker | undefined;
   log: Logger;
 }
+
+const resolveSchema = z.strictObject({
+  isbn: z.string().min(1).optional(),
+  title: z.string().min(1).optional(),
+  author: z.string().min(1).optional(),
+  identifiers: z.array(z.string().min(1)).optional(),
+});
 
 const applySchema = z.strictObject({
   scope: z.union([z.literal('all'), z.string().min(1)]),
@@ -50,7 +62,7 @@ function keysMatch(presented: string | undefined, expected: string): boolean {
  * records in M1) — plus builders/targets discovery and an open /health.
  */
 export function createApp(deps: AppDeps): Hono {
-  const { config, recipeStore, runStore, queue, scheduler, targets, builders, log } = deps;
+  const { config, recipeStore, runStore, queue, scheduler, targets, builders, resolve, log } = deps;
   const app = new Hono();
 
   app.get('/health', (c) => c.json({ status: 'ok', service: 'libretto' }));
@@ -217,6 +229,78 @@ export function createApp(deps: AppDeps): Hono {
       }
     }
     return c.json({ collections, issues });
+  });
+
+  // --- Member-level missing: the wanted-but-unheld member IDENTITIES for one recipe (title/author/
+  // ISBN/identifier refs), so a consumer can mint one request row per missing book. Libretto knows each
+  // recipe's FULL resolved membership (builder work list) and which are held (matched against the target
+  // library by the SAME matcher the reconcile uses) — the difference is the missing[] reported here.
+  api.get('/collections/:recipeId/missing', async (c) => {
+    const recipeId = c.req.param('recipeId');
+    const recipe = await recipeStore.get(recipeId).catch(() => undefined);
+    if (!recipe) return c.json({ error: `recipe ${recipeId} not found` }, 404);
+
+    let works;
+    try {
+      works = await resolveBuilder(recipe, builders);
+    } catch (error) {
+      // The builder source is unavailable (e.g. HARDCOVER_TOKEN unset, or the ref did not resolve) —
+      // report it honestly rather than pretend the whole membership is missing.
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
+    }
+
+    const { libraryId, server } = recipe.targetLibrary;
+    try {
+      const items = await targets.for(server).listItems(libraryId);
+      const { matchedIds, missingWorks } = matchWorks(works, items, recipe.variables.titleFallback);
+      return c.json({
+        recipeId: recipe.id,
+        server,
+        libraryId,
+        name: recipe.name,
+        total: works.length,
+        heldCount: matchedIds.length,
+        missingCount: missingWorks.length,
+        missing: missingWorks.map(toMissingMember),
+      });
+    } catch (error) {
+      const message =
+        error instanceof TargetUnavailableError || error instanceof Error
+          ? error.message
+          : String(error);
+      return c.json({ error: message }, 502);
+    }
+  });
+
+  // --- Resolve broker (M3 direction-a): resolve an ISBN|title+author to a Google-Books volume id
+  // (the LazyLibrarian addBook key), ISBN-first with a guarded title fallback. Mutates NOTHING — a
+  // reusable resolution service. 200 { resolved: null } is an honest no-match (not an error); 503 when
+  // the broker is not configured (GOOGLE_BOOKS_API_KEY unset).
+  api.post('/resolve', async (c) => {
+    if (!resolve) {
+      return c.json({ error: 'resolve broker not configured (set GOOGLE_BOOKS_API_KEY)' }, 503);
+    }
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'request body must be JSON' }, 400);
+    }
+    const parsed = resolveSchema.safeParse(body);
+    if (
+      !parsed.success ||
+      (!parsed.data.title && !parsed.data.isbn && !parsed.data.identifiers?.length)
+    ) {
+      return c.json({ error: 'body must carry at least one of { isbn, title, identifiers }' }, 400);
+    }
+    const { isbn, title, author, identifiers } = parsed.data;
+    const resolved = await resolve.resolve({
+      ...(isbn === undefined ? {} : { isbn }),
+      ...(identifiers === undefined ? {} : { identifiers }),
+      ...(author === undefined ? {} : { authors: [author] }),
+      title: title ?? '',
+    });
+    return c.json({ resolved });
   });
 
   // --- Discovery.

@@ -3,6 +3,7 @@ import type { AppConfig } from '../config.js';
 import { normalizeIdentifier } from '../identifiers.js';
 import type { Logger } from '../logger.js';
 import { TitleIndex } from '../matching/title.js';
+import { createResolveBroker, type ResolveBroker } from '../resolve/broker.js';
 import {
   createLazyLibrarianClient,
   type LazyLibrarianCommands,
@@ -57,6 +58,12 @@ export interface AcquireContext {
   capPerRun: number;
   /** Spacing between LL write calls (estate politeness). */
   intervalMs: number;
+  /**
+   * The ISBN-first resolve broker (M3 direction-a). When present, a NOT-in-LL want is resolved to a
+   * Google-Books volume id Libretto-side and added via the reliable `addBook(<volumeId>)` path, instead
+   * of LazyLibrarian's throttled keyless `addBookByISBN`. Undefined ⇒ the prior addBookByISBN behavior.
+   */
+  resolve?: ResolveBroker;
   /** Injectable sleep so tests don't wait real time. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -74,17 +81,27 @@ const HANDLED_STATUSES = new Set(['wanted', 'snatched', 'open', 'have', 'matched
  * undefined when LAZYLIBRARIAN_URL / LAZYLIBRARIAN_API_KEY are unset — acquisition then no-ops even for
  * a recipe with acquisitionEnabled (the reconciler logs the gap), validated at use, not at boot.
  */
-export function createAcquireContext(config: AppConfig, log: Logger): AcquireContext | undefined {
+export function createAcquireContext(
+  config: AppConfig,
+  log: Logger,
+  broker?: ResolveBroker | undefined,
+): AcquireContext | undefined {
   const client = createLazyLibrarianClient(config.lazyLibrarian);
   if (!client) return undefined;
+  const resolve = broker ?? createResolveBroker(config, log);
   log.info(
-    { capPerRun: config.acquisitionCapPerRun, intervalMs: config.acquisitionIntervalMs },
+    {
+      capPerRun: config.acquisitionCapPerRun,
+      intervalMs: config.acquisitionIntervalMs,
+      resolveBroker: resolve !== undefined,
+    },
     'acquisition: LazyLibrarian configured; acquisition leg armed for recipes with acquisitionEnabled',
   );
   return {
     client,
     capPerRun: config.acquisitionCapPerRun,
     intervalMs: config.acquisitionIntervalMs,
+    ...(resolve ? { resolve } : {}),
   };
 }
 
@@ -154,7 +171,9 @@ export async function acquireMissing(
     }
 
     // Decide the action WITHOUT consuming the cap, so resolution-only skips stay free.
-    let action: { kind: 'drive'; book: LlBook } | { kind: 'add'; isbn: string } | undefined;
+    const isbnKey = work.identifiers.find((id) => id.startsWith('isbn:'));
+    const isbn = isbnKey ? isbnKey.slice('isbn:'.length) : null;
+    let action: { kind: 'drive'; book: LlBook } | { kind: 'add'; isbn: string | null } | undefined;
     if (book) {
       claimed.add(book.bookId);
       const status = normalizedStatus(book, format);
@@ -168,16 +187,20 @@ export async function acquireMissing(
       }
       action = { kind: 'drive', book };
     } else {
-      const isbnKey = work.identifiers.find((id) => id.startsWith('isbn:'));
-      if (!isbnKey) {
+      // Not in LL. It can be added when it has an ISBN, OR when the resolve broker (M3 direction-a) can
+      // resolve it to a Google-Books volume id from its title+author. Without either, it is an honest
+      // skip (LL's keyless findBook is unusable in this deployment).
+      const brokerCanTry =
+        ctx.resolve !== undefined && Boolean(work.title && work.title.length > 0);
+      if (!isbn && !brokerCanTry) {
         counts.skipped += 1;
         log.info(
           { recipeId, work: work.label, identifiers: work.identifiers },
-          'acquisition: not in LazyLibrarian and no ISBN to resolve (findBook unavailable); skipping',
+          'acquisition: not in LazyLibrarian and no ISBN / no broker title to resolve; skipping',
         );
         continue;
       }
-      action = { kind: 'add', isbn: isbnKey.slice('isbn:'.length) };
+      action = { kind: 'add', isbn };
     }
 
     // An LL write is due. Enforce the per-run cap and estate politeness.
@@ -203,20 +226,7 @@ export async function acquireMissing(
           'acquisition: queued + searched (LazyLibrarian now wants it)',
         );
       } else {
-        const ack = await ctx.client.addBookByISBN(action.isbn);
-        if (/no results/i.test(ack)) {
-          counts.skipped += 1;
-          log.info(
-            { recipeId, work: work.label, isbn: action.isbn, ack: ack.slice(0, 120) },
-            'acquisition: LazyLibrarian could not resolve the ISBN this run (Google Books); will retry',
-          );
-        } else {
-          counts.added += 1;
-          log.info(
-            { recipeId, work: work.label, isbn: action.isbn, ack: ack.slice(0, 120) },
-            'acquisition: added to LazyLibrarian by ISBN; queue + search on a later run',
-          );
-        }
+        await addNewBook(recipeId, work, action.isbn, ctx, log, counts);
       }
     } catch (error) {
       counts.errors += 1;
@@ -228,4 +238,75 @@ export async function acquireMissing(
   }
 
   return counts;
+}
+
+/**
+ * Add a NOT-in-LL want. The M3 fix: when the resolve broker is present, resolve the want to a
+ * Google-Books volume id Libretto-side (ISBN-first, guarded title fallback) and add via the reliable
+ * `addBook(<volumeId>)` path — which does NOT lean on LazyLibrarian's throttled keyless ISBN search.
+ * Falls back to `addBookByISBN(<isbn>)` when the broker is absent or resolves nothing (no regression).
+ */
+async function addNewBook(
+  recipeId: string,
+  work: WorkItem,
+  isbn: string | null,
+  ctx: AcquireContext,
+  log: Logger,
+  counts: AcquisitionCounts,
+): Promise<void> {
+  if (ctx.resolve) {
+    const resolved = await ctx.resolve.resolve({
+      identifiers: work.identifiers,
+      isbn,
+      title: work.title ?? work.label,
+      authors: work.authors,
+    });
+    if (resolved) {
+      const ack = await ctx.client.addBook(resolved.volumeId);
+      counts.added += 1;
+      log.info(
+        {
+          recipeId,
+          work: work.label,
+          volumeId: resolved.volumeId,
+          via: resolved.via,
+          ack: ack.slice(0, 120),
+        },
+        'acquisition: resolve broker mapped the want to a Google-Books volume id; added via addBook; queue + search on a later run',
+      );
+      return;
+    }
+    if (!isbn) {
+      // Broker could not resolve and there is no ISBN to fall back on — honest skip, retried next run.
+      counts.skipped += 1;
+      log.info(
+        { recipeId, work: work.label },
+        'acquisition: resolve broker found no Google-Books match and no ISBN fallback; skipping',
+      );
+      return;
+    }
+    log.info(
+      { recipeId, work: work.label, isbn },
+      'acquisition: resolve broker found no match; falling back to addBookByISBN',
+    );
+  }
+
+  if (!isbn) {
+    counts.skipped += 1;
+    return;
+  }
+  const ack = await ctx.client.addBookByISBN(isbn);
+  if (/no results/i.test(ack)) {
+    counts.skipped += 1;
+    log.info(
+      { recipeId, work: work.label, isbn, ack: ack.slice(0, 120) },
+      'acquisition: LazyLibrarian could not resolve the ISBN this run (Google Books); will retry',
+    );
+  } else {
+    counts.added += 1;
+    log.info(
+      { recipeId, work: work.label, isbn, ack: ack.slice(0, 120) },
+      'acquisition: added to LazyLibrarian by ISBN; queue + search on a later run',
+    );
+  }
 }
