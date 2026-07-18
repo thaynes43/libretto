@@ -1,6 +1,6 @@
 {
   "name": "libretto",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "List and collection automation for your book stack: Kavita, Audiobookshelf, LazyLibrarian",
   "license": "AGPL-3.0-only",
   "repository": {

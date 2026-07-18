@@ -2,7 +2,7 @@ import type { DiskCache } from '../cache/disk.js';
 import { fetchJson } from '../http.js';
 import { normalizeIdentifiers } from '../identifiers.js';
 import type { Logger } from '../logger.js';
-import type { WorkItem } from './index.js';
+import type { BuilderSearchResponse, BuilderSearchResult, WorkItem } from './index.js';
 
 /**
  * hardcover_series builder (DESIGN-037 D-05, the flagship): all books of a
@@ -34,6 +34,8 @@ export interface HardcoverSeriesSourceOptions {
   minIntervalMs?: number;
   /** How long a resolved series stays cached (default 6 hours). */
   cacheTtlMs?: number;
+  /** How long a typeahead search result stays cached (default 1 hour; softens rate limits). */
+  searchCacheTtlMs?: number;
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -42,7 +44,43 @@ export interface HardcoverSeriesSourceOptions {
 const DEFAULT_URL = 'https://api.hardcover.app/v1/graphql';
 const DEFAULT_MIN_INTERVAL_MS = 1100;
 const DEFAULT_CACHE_TTL_MS = 6 * 60 * 60 * 1000;
+const DEFAULT_SEARCH_CACHE_TTL_MS = 60 * 60 * 1000;
 const EDITIONS_CHUNK = 100;
+/** Hard ceiling on typeahead hits regardless of the caller's asked-for limit. */
+const SEARCH_MAX_RESULTS = 25;
+
+/**
+ * Typeahead search over Hardcover series (M4 builder page). The `search` query is Hardcover's
+ * Typesense-backed index; `results` is the raw Typesense response (found + hits[].document).
+ * A Series document carries { id, name, slug, author_name, primary_books_count, books_count }
+ * (verified live against api.hardcover.app, 2026-07). We key the recipe ref off the numeric
+ * `id` (stable; the seriesWorks resolver accepts an id or a slug) and prefer
+ * primary_books_count (the canonical series entries) as the member-count hint.
+ */
+const SEARCH_QUERY = `
+query LibrettoSeriesSearch($q: String!, $perPage: Int!) {
+  search(query: $q, query_type: "Series", per_page: $perPage, page: 1) {
+    results
+  }
+}`;
+
+interface HardcoverSeriesDocument {
+  id?: number | string | null;
+  name?: string | null;
+  slug?: string | null;
+  author_name?: string | null;
+  primary_books_count?: number | null;
+  books_count?: number | null;
+}
+
+interface HardcoverSearchData {
+  search: {
+    results?: {
+      found?: number | null;
+      hits?: { document?: HardcoverSeriesDocument | null }[] | null;
+    } | null;
+  } | null;
+}
 
 const SERIES_QUERY = `
 query LibrettoSeriesWorks($where: series_bool_exp!) {
@@ -123,6 +161,7 @@ export class HardcoverSeriesSource {
   private readonly url: string;
   private readonly minIntervalMs: number;
   private readonly cacheTtlMs: number;
+  private readonly searchCacheTtlMs: number;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
   private gate: Promise<void> = Promise.resolve();
@@ -132,6 +171,7 @@ export class HardcoverSeriesSource {
     this.url = options.url ?? DEFAULT_URL;
     this.minIntervalMs = options.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
+    this.searchCacheTtlMs = options.searchCacheTtlMs ?? DEFAULT_SEARCH_CACHE_TTL_MS;
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = options.now ?? Date.now;
   }
@@ -141,7 +181,8 @@ export class HardcoverSeriesSource {
     // Bump the key version whenever the cached WorkItem shape changes — a live
     // pod otherwise serves pre-change entries for the full TTL (D-04's title
     // fallback matched 0 in production because v1 entries carried no `title`).
-    const cacheKey = `hardcover:series-works:v2:${ref}`;
+    // v3 adds WorkItem.position (series position) for the M4 member preview.
+    const cacheKey = `hardcover:series-works:v3:${ref}`;
     const cached = await this.options.cache.get<WorkItem[]>(cacheKey);
     if (cached !== undefined) {
       this.options.log.debug({ ref, works: cached.length }, 'hardcover: series cache hit');
@@ -208,6 +249,7 @@ export class HardcoverSeriesSource {
         // here: the Hardcover GraphQL depth-3 cap already spends its budget on
         // series -> book_series -> book, so contributions would exceed it.
         title: book.title,
+        ...(entry.position === null ? {} : { position: entry.position }),
       });
     }
 
@@ -217,6 +259,57 @@ export class HardcoverSeriesSource {
       'hardcover: resolved series',
     );
     return works;
+  }
+
+  /**
+   * Typeahead search over Hardcover series (M4 builder page). Returns bounded {ref, name,
+   * workCount?, author?} hits so a user finds a series by name instead of pasting a slug. Paced
+   * through the same rate-limit gate as seriesWorks and cached (short TTL) so repeated keystrokes
+   * on the same prefix do not re-hit Hardcover.
+   */
+  async searchSeries(query: string, limit: number): Promise<BuilderSearchResponse> {
+    const q = query.trim();
+    const perPage = Math.min(Math.max(limit, 1), SEARCH_MAX_RESULTS);
+    if (q.length === 0) return { results: [], truncated: false };
+
+    const cacheKey = `hardcover:series-search:v1:${perPage}:${q.toLowerCase()}`;
+    const cached = await this.options.cache.get<BuilderSearchResponse>(cacheKey);
+    if (cached !== undefined) {
+      this.options.log.debug({ q, hits: cached.results.length }, 'hardcover: search cache hit');
+      return cached;
+    }
+
+    const data = await this.request<HardcoverSearchData>(SEARCH_QUERY, { q, perPage });
+    const raw = data.search?.results;
+    const hits = Array.isArray(raw?.hits) ? raw.hits : [];
+    const found = typeof raw?.found === 'number' ? raw.found : hits.length;
+
+    const results: BuilderSearchResult[] = [];
+    for (const hit of hits) {
+      const doc = hit.document;
+      if (!doc || doc.id === null || doc.id === undefined) continue;
+      const ref = String(doc.id);
+      const primary = doc.primary_books_count;
+      const total = doc.books_count;
+      const workCount =
+        typeof primary === 'number' && primary > 0
+          ? primary
+          : typeof total === 'number' && total > 0
+            ? total
+            : undefined;
+      results.push({
+        ref,
+        name: doc.name ?? ref,
+        ...(workCount !== undefined ? { workCount } : {}),
+        ...(doc.author_name ? { author: doc.author_name } : {}),
+      });
+      if (results.length >= limit) break;
+    }
+
+    const out: BuilderSearchResponse = { results, truncated: found > results.length };
+    await this.options.cache.set(cacheKey, out, this.searchCacheTtlMs);
+    this.options.log.info({ q, hits: results.length, found }, 'hardcover: resolved series search');
+    return out;
   }
 
   /** Paced GraphQL request: all requests serialize and keep minIntervalMs apart. */

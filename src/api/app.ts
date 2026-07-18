@@ -7,6 +7,7 @@ import type { Scheduler } from '../core/scheduler.js';
 import type { RunQueue } from '../core/queue.js';
 import type { Logger } from '../logger.js';
 import {
+  builderSchema,
   recipeSchema,
   zodIssuesToValidationIssues,
   type ValidationIssue,
@@ -16,8 +17,13 @@ import type { RunStore } from '../runs/store.js';
 import { recipeIdFromDescription } from '../target/marker.js';
 import type { TargetRegistry } from '../target/registry.js';
 import { TargetUnavailableError } from '../target/types.js';
-import { resolveBuilder } from '../builders/index.js';
-import { matchWorks, toMissingMember } from '../core/match.js';
+import {
+  BuilderUnavailableError,
+  resolveBuilder,
+  searchBuilder,
+  UnknownBuilderError,
+} from '../builders/index.js';
+import { matchWorks, toMissingMember, toPreviewMember } from '../core/match.js';
 import type { ResolveBroker } from '../resolve/broker.js';
 
 export interface AppDeps {
@@ -39,6 +45,25 @@ const resolveSchema = z.strictObject({
   author: z.string().min(1).optional(),
   identifiers: z.array(z.string().min(1)).optional(),
 });
+
+/** Default + hard ceiling on typeahead search hits (the client debounces; we cap counts). */
+const SEARCH_DEFAULT_LIMIT = 8;
+const SEARCH_MAX_LIMIT = 25;
+/** Default + hard ceiling on preview members (the app applies the per-user cap on top). */
+const PREVIEW_DEFAULT_LIMIT = 100;
+const PREVIEW_MAX_LIMIT = 100;
+
+const previewSchema = z.strictObject({
+  builder: builderSchema,
+  limit: z.number().int().positive().max(PREVIEW_MAX_LIMIT).optional(),
+});
+
+/** Parse a bounded positive-int query param, falling back to `fallback`, clamped to `max`. */
+function clampLimit(raw: string | undefined, fallback: number, max: number): number {
+  const value = Number(raw);
+  if (!Number.isInteger(value) || value <= 0) return fallback;
+  return Math.min(value, max);
+}
 
 const applySchema = z.strictObject({
   scope: z.union([z.literal('all'), z.string().min(1)]),
@@ -242,7 +267,7 @@ export function createApp(deps: AppDeps): Hono {
 
     let works;
     try {
-      works = await resolveBuilder(recipe, builders);
+      works = await resolveBuilder(recipe.builder, builders);
     } catch (error) {
       // The builder source is unavailable (e.g. HARDCOVER_TOKEN unset, or the ref did not resolve) —
       // report it honestly rather than pretend the whole membership is missing.
@@ -301,6 +326,63 @@ export function createApp(deps: AppDeps): Hono {
       title: title ?? '',
     });
     return c.json({ resolved });
+  });
+
+  // --- Search: typeahead for a builder's ref (M4 builder page). Find the series/list by
+  // typing a name so a user never pastes a slug. `hardcover_series` proxies Hardcover's search
+  // (bounded, cached); `nyt_list` filters the static well-known list names (no key, no external
+  // call); `static_ids` has no searchable ref (empty). Unknown type -> 400; unconfigured source
+  // -> 503. The client owns debounce; result counts are capped server-side.
+  api.get('/search', async (c) => {
+    const type = c.req.query('type');
+    const q = c.req.query('q') ?? '';
+    const limit = clampLimit(c.req.query('limit'), SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT);
+    if (!type) return c.json({ error: 'query param "type" is required' }, 400);
+    try {
+      const { results, truncated } = await searchBuilder(type, q, limit, builders);
+      return c.json({ type, query: q.trim(), results, truncated });
+    } catch (error) {
+      if (error instanceof UnknownBuilderError) return c.json({ error: error.message }, 400);
+      if (error instanceof BuilderUnavailableError) return c.json({ error: error.message }, 503);
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
+    }
+  });
+
+  // --- Preview: the MEMBER-LEVEL identities a draft builder would resolve to (M4 builder page),
+  // so the app can split held vs missing against its own mirrors BEFORE save. Resolves an UNSAVED
+  // builder (no recipe id / target needed); mutates NOTHING. Bounded at PREVIEW_MAX_LIMIT members
+  // with an honest `truncated` flag (the app applies the per-user size cap on top). A 0-member
+  // container slug comes back total:0 honestly. 502 when the builder source is unavailable.
+  api.post('/preview', async (c) => {
+    let body: unknown;
+    try {
+      body = await c.req.json();
+    } catch {
+      return c.json({ error: 'request body must be JSON' }, 400);
+    }
+    const parsed = previewSchema.safeParse(body);
+    if (!parsed.success) {
+      return c.json(
+        {
+          error: 'body must be { builder: {...}, limit? }',
+          issues: zodIssuesToValidationIssues(parsed.error),
+        },
+        400,
+      );
+    }
+    const limit = parsed.data.limit ?? PREVIEW_DEFAULT_LIMIT;
+    let works;
+    try {
+      works = await resolveBuilder(parsed.data.builder, builders);
+    } catch (error) {
+      return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
+    }
+    return c.json({
+      builder: parsed.data.builder,
+      total: works.length,
+      truncated: works.length > limit,
+      members: works.slice(0, limit).map(toPreviewMember),
+    });
   });
 
   // --- Discovery.

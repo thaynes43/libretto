@@ -55,6 +55,45 @@ const SERIES_FIXTURE = {
   ],
 };
 
+/**
+ * Recorded shape of the Hardcover `search(query_type: "Series")` response (verified live against
+ * api.hardcover.app, 2026-07): `results` is the raw Typesense payload — `found` + `hits[].document`
+ * with { id, name, slug, author_name, primary_books_count, books_count }.
+ */
+const SEARCH_FIXTURE = {
+  search: {
+    results: {
+      found: 9,
+      hits: [
+        {
+          document: {
+            id: '997',
+            name: 'The Stormlight Archive',
+            slug: 'the-stormlight-archive',
+            author_name: 'Brandon Sanderson',
+            primary_books_count: 10,
+            books_count: 40,
+          },
+        },
+        {
+          document: {
+            id: 284033,
+            name: 'The Stormlight Archive 1',
+            slug: 'the-stormlight-archive-1-brandon-sanderson',
+            author_name: 'Brandon Sanderson',
+            primary_books_count: 1,
+            books_count: 1,
+          },
+        },
+        {
+          // A hit missing primary_books_count falls back to books_count; no author is honest.
+          document: { id: 5, name: 'No Primary Count', books_count: 3 },
+        },
+      ],
+    },
+  },
+};
+
 const EDITIONS_FIXTURE = {
   editions: [
     // Sorted by users_count desc, as the query orders them.
@@ -97,6 +136,9 @@ describe('HardcoverSeriesSource', () => {
       }
       if (body.query.includes('LibrettoBookEditions')) {
         return c.json({ data: EDITIONS_FIXTURE });
+      }
+      if (body.query.includes('LibrettoSeriesSearch')) {
+        return c.json({ data: SEARCH_FIXTURE });
       }
       return c.json({ errors: [{ message: 'unknown operation' }] });
     });
@@ -170,6 +212,44 @@ describe('HardcoverSeriesSource', () => {
     await expect(source.seriesWorks('no-such-series')).rejects.toThrow(
       'hardcover series "no-such-series" not found',
     );
+  });
+
+  it('searches series to {ref, name, workCount, author} hits with an honest truncated flag', async () => {
+    const { results, truncated } = await source.searchSeries('stormlight', 8);
+    expect(results).toEqual([
+      { ref: '997', name: 'The Stormlight Archive', workCount: 10, author: 'Brandon Sanderson' },
+      {
+        ref: '284033',
+        name: 'The Stormlight Archive 1',
+        workCount: 1,
+        author: 'Brandon Sanderson',
+      },
+      { ref: '5', name: 'No Primary Count', workCount: 3 },
+    ]);
+    // found (9) > returned (3) — the source had more.
+    expect(truncated).toBe(true);
+  });
+
+  it('honors the result limit', async () => {
+    const { results } = await source.searchSeries('stormlight', 1);
+    expect(results).toHaveLength(1);
+    expect(results[0]!.ref).toBe('997');
+  });
+
+  it('returns nothing for a blank query without hitting Hardcover', async () => {
+    const before = requests.length;
+    const { results, truncated } = await source.searchSeries('   ', 8);
+    expect(results).toEqual([]);
+    expect(truncated).toBe(false);
+    expect(requests.length).toBe(before);
+  });
+
+  it('serves a repeat search from the disk cache without a new request', async () => {
+    const first = await source.searchSeries('stormlight', 8);
+    const before = requests.length;
+    const second = await source.searchSeries('stormlight', 8);
+    expect(second).toEqual(first);
+    expect(requests.length).toBe(before);
   });
 
   it('surfaces graphql errors as errors', async () => {

@@ -351,6 +351,157 @@ describe('API', () => {
     });
   });
 
+  describe('builder search', () => {
+    it('proxies hardcover_series search through the wired source', async () => {
+      const tmp = await makeTempDir();
+      const config = loadConfig({
+        CONFIG_DIR: tmp.dir,
+        LIBRETTO_API_KEY: KEY,
+      } as NodeJS.ProcessEnv);
+      const recipeStore = new RecipeStore(config.recipesDir);
+      const runStore = new RunStore(config.runsFile);
+      const targets = registryFor(makeSeededTarget());
+      const q = new RunQueue({ recipeStore, runStore, targets, builders: {}, log: silentLogger });
+      const s = new Scheduler(recipeStore, q, silentLogger);
+      const searchApp = createApp({
+        config,
+        recipeStore,
+        runStore,
+        queue: q,
+        scheduler: s,
+        targets,
+        builders: {
+          hardcoverSeries: {
+            seriesWorks: () => Promise.resolve([]),
+            searchSeries: (query, limit) =>
+              Promise.resolve({
+                results: [
+                  { ref: '997', name: `Series for ${query}`, workCount: 10, author: 'X' },
+                ].slice(0, limit),
+                truncated: false,
+              }),
+          },
+        },
+        resolve: undefined,
+        log: silentLogger,
+      });
+      const res = await searchApp.request('/api/search?type=hardcover_series&q=storm', {
+        headers: auth,
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        type: 'hardcover_series',
+        query: 'storm',
+        results: [{ ref: '997', name: 'Series for storm', workCount: 10, author: 'X' }],
+        truncated: false,
+      });
+      s.stop();
+      await tmp.cleanup();
+    });
+
+    it('503s hardcover_series search when the source is not configured', async () => {
+      const res = await app.request('/api/search?type=hardcover_series&q=storm', { headers: auth });
+      expect(res.status).toBe(503);
+    });
+
+    it('serves nyt_list search from the static names without a key or external call', async () => {
+      const res = await app.request('/api/search?type=nyt_list&q=fiction', { headers: auth });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { results: { ref: string; name: string }[] };
+      expect(body.results.length).toBeGreaterThan(0);
+      expect(body.results.some((r) => r.ref === 'hardcover-fiction')).toBe(true);
+    });
+
+    it('returns nothing for static_ids (free-form ref)', async () => {
+      const res = await app.request('/api/search?type=static_ids&q=whatever', { headers: auth });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        type: 'static_ids',
+        query: 'whatever',
+        results: [],
+        truncated: false,
+      });
+    });
+
+    it('400s an unknown builder type', async () => {
+      const res = await app.request('/api/search?type=nope&q=x', { headers: auth });
+      expect(res.status).toBe(400);
+    });
+
+    it('400s a missing type param', async () => {
+      const res = await app.request('/api/search?q=x', { headers: auth });
+      expect(res.status).toBe(400);
+    });
+  });
+
+  describe('draft preview', () => {
+    it('resolves a static_ids draft to its member identities before save', async () => {
+      const res = await app.request('/api/preview', {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ builder: { type: 'static_ids', ref: ['isbn:1', 'isbn:2'] } }),
+      });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        builder: { type: 'static_ids', ref: ['isbn:1', 'isbn:2'] },
+        total: 2,
+        truncated: false,
+        members: [
+          {
+            label: 'isbn:1',
+            title: null,
+            author: null,
+            isbn: '1',
+            position: null,
+            identifiers: ['isbn:1'],
+          },
+          {
+            label: 'isbn:2',
+            title: null,
+            author: null,
+            isbn: '2',
+            position: null,
+            identifiers: ['isbn:2'],
+          },
+        ],
+      });
+    });
+
+    it('bounds the member list and flags truncation', async () => {
+      const res = await app.request('/api/preview', {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({
+          builder: { type: 'static_ids', ref: ['isbn:1', 'isbn:2', 'isbn:3'] },
+          limit: 2,
+        }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { total: number; truncated: boolean; members: unknown[] };
+      expect(body.total).toBe(3);
+      expect(body.truncated).toBe(true);
+      expect(body.members).toHaveLength(2);
+    });
+
+    it('502s a draft whose builder source is unavailable', async () => {
+      const res = await app.request('/api/preview', {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ builder: { type: 'hardcover_series', ref: 'the-expanse' } }),
+      });
+      expect(res.status).toBe(502);
+    });
+
+    it('400s a malformed draft', async () => {
+      const res = await app.request('/api/preview', {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ builder: { type: 'static_ids' } }),
+      });
+      expect(res.status).toBe(400);
+    });
+  });
+
   describe('discovery', () => {
     it('enumerates builders and targets', async () => {
       const builders = await app.request('/api/builders', { headers: auth });
