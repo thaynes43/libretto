@@ -255,7 +255,7 @@ async function addNewBook(
   counts: AcquisitionCounts,
 ): Promise<void> {
   if (ctx.resolve) {
-    const resolved = await ctx.resolve.resolve({
+    const { resolved, reason } = await ctx.resolve.resolve({
       identifiers: work.identifiers,
       isbn,
       title: work.title ?? work.label,
@@ -276,17 +276,19 @@ async function addNewBook(
       );
       return;
     }
+    // No volume. `reason` tells a genuine no-match apart from a dead quota / upstream error (the
+    // 2026-07-20 honesty fix) — the ISBN fallback below is unchanged either way (no regression).
     if (!isbn) {
       // Broker could not resolve and there is no ISBN to fall back on — honest skip, retried next run.
       counts.skipped += 1;
       log.info(
-        { recipeId, work: work.label },
+        { recipeId, work: work.label, reason },
         'acquisition: resolve broker found no Google-Books match and no ISBN fallback; skipping',
       );
       return;
     }
     log.info(
-      { recipeId, work: work.label, isbn },
+      { recipeId, work: work.label, isbn, reason },
       'acquisition: resolve broker found no match; falling back to addBookByISBN',
     );
   }

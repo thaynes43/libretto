@@ -330,9 +330,12 @@ describe('API', () => {
         resolve: {
           resolve: () =>
             Promise.resolve({
-              volumeId: 'VOL_DUNE',
-              isbn13: '9780441172719',
-              via: 'isbn' as const,
+              resolved: {
+                volumeId: 'VOL_DUNE',
+                isbn13: '9780441172719',
+                via: 'isbn' as const,
+              },
+              reason: 'resolved' as const,
             }),
         },
         log: silentLogger,
@@ -345,7 +348,44 @@ describe('API', () => {
       expect(res.status).toBe(200);
       expect(await res.json()).toEqual({
         resolved: { volumeId: 'VOL_DUNE', isbn13: '9780441172719', via: 'isbn' },
+        reason: 'resolved',
       });
+      s.stop();
+      await tmp.cleanup();
+    });
+
+    it('surfaces the reason additively while keeping resolved:null on a dead quota (honesty fix)', async () => {
+      const tmp = await makeTempDir();
+      const config = loadConfig({
+        CONFIG_DIR: tmp.dir,
+        LIBRETTO_API_KEY: KEY,
+      } as NodeJS.ProcessEnv);
+      const recipeStore = new RecipeStore(config.recipesDir);
+      const runStore = new RunStore(config.runsFile);
+      const targets = registryFor(makeSeededTarget());
+      const q = new RunQueue({ recipeStore, runStore, targets, builders: {}, log: silentLogger });
+      const s = new Scheduler(recipeStore, q, silentLogger);
+      const brokerApp = createApp({
+        config,
+        recipeStore,
+        runStore,
+        queue: q,
+        scheduler: s,
+        targets,
+        builders: {},
+        resolve: {
+          resolve: () => Promise.resolve({ resolved: null, reason: 'quota_exhausted' as const }),
+        },
+        log: silentLogger,
+      });
+      const res = await brokerApp.request('/api/resolve', {
+        method: 'POST',
+        headers: jsonHeaders,
+        body: JSON.stringify({ isbn: '9780441172719', title: 'Dune' }),
+      });
+      expect(res.status).toBe(200);
+      // resolved stays null (downstream self-heals hourly); the reason is the ADDITIVE honesty signal.
+      expect(await res.json()).toEqual({ resolved: null, reason: 'quota_exhausted' });
       s.stop();
       await tmp.cleanup();
     });

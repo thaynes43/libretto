@@ -22,7 +22,19 @@
  * acquisition leg can drive `addBook(<volumeId>)` — the reliable ingestion path — instead of the
  * throttled `addBookByISBN`. The key is OPTIONAL: with no key against the real GB API, resolve returns
  * null and acquisition falls back to its prior addBookByISBN behavior (no regression).
+ *
+ * Observability + honesty (the 2026-07-20 quota-exhaustion fix): a non-200 from Google Books (429 daily
+ * quota, 5xx backend bursts, 403) is NEVER conflated with a legitimate `200 totalItems:0` no-match. Every
+ * non-200 is logged with its HTTP status and Google's error reason (never the API key/URL). A 429/5xx is a
+ * RETRYABLE upstream error surfaced to the caller as {@link GoogleBooksUpstreamError}, distinct from a null
+ * no-match. A daily-quota 429 (`RESOURCE_EXHAUSTED` / "Queries per day") additionally LATCHES a breaker-lite
+ * cooldown on this resolver instance, so the remaining Google Books calls in the same pass short-circuit
+ * without burning attempts into a dead quota; the latch self-heals after the cooldown so the next hourly
+ * pass re-probes once the daily quota resets.
  */
+
+import { pino } from 'pino';
+import type { Logger } from '../logger.js';
 
 /** Strip the TRAILING series parenthetical / bracket and LEADING file-title series prefixes for the
  * `intitle:` query — the file-derived titles Kavita/ABS expose ("Expanse 05 - Nemesis Games",
@@ -120,6 +132,75 @@ interface Volume {
   };
 }
 
+/** How a Google Books lookup failed upstream — distinct from a null no-match, surfaced for honesty. */
+export type GbFailureKind = 'quota_exhausted' | 'upstream_error';
+
+/**
+ * A non-200 (or network/timeout) from Google Books that is NOT a legitimate no-match. Thrown by the
+ * resolver so callers can tell "the daily quota is dead / the backend erred" apart from "GB honestly
+ * has no such volume" (`200 totalItems:0` → null). `quota_exhausted` is the daily-quota latch trigger;
+ * `upstream_error` is any other retryable/failed non-200 that persisted past the retries.
+ */
+export class GoogleBooksUpstreamError extends Error {
+  constructor(
+    readonly kind: GbFailureKind,
+    /** The HTTP status (0 for a network/timeout failure with no response). */
+    readonly status: number,
+    /** Google's machine reason / status text, if any (never the API key). */
+    readonly reason?: string,
+  ) {
+    super(`google books ${kind} (HTTP ${status}${reason ? `: ${reason}` : ''})`);
+    this.name = 'GoogleBooksUpstreamError';
+  }
+}
+
+interface GbErrorInfo {
+  /** `error.errors[0].reason`, e.g. `dailyLimitExceeded` / `quotaExceeded` / `rateLimitExceeded`. */
+  reason?: string;
+  /** `error.message` — Google's human sentence (may name the reset, e.g. "Queries per day"). */
+  message?: string;
+  /** `error.status`, e.g. `RESOURCE_EXHAUSTED`. */
+  gbStatus?: string;
+}
+
+/** Parse a Google Books error body ({ error: { message, status, errors:[{reason,message}] } }); best-effort. */
+export function parseGbError(bodyText: string): GbErrorInfo {
+  try {
+    const parsed = JSON.parse(bodyText) as {
+      error?: {
+        message?: string;
+        status?: string;
+        errors?: { reason?: string; message?: string }[];
+      };
+    };
+    const err = parsed.error;
+    if (!err) return {};
+    const info: GbErrorInfo = {};
+    const reason = err.errors?.find((e) => e.reason)?.reason;
+    if (reason) info.reason = reason;
+    if (err.message) info.message = err.message;
+    if (err.status) info.gbStatus = err.status;
+    return info;
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * Is this non-200 the DAILY quota being exhausted (the latch trigger), as opposed to a transient
+ * per-second rate limit or a backend blip? Google signals daily exhaustion as reason
+ * `dailyLimitExceeded`/`quotaExceeded`, status `RESOURCE_EXHAUSTED`, or a "Queries per day" message.
+ * A `rateLimitExceeded`/`userRateLimitExceeded` burst is deliberately NOT treated as daily exhaustion
+ * (it is transient — the retry/backoff handles it).
+ */
+export function isDailyQuotaExhausted(info: GbErrorInfo): boolean {
+  const reason = (info.reason ?? '').toLowerCase();
+  if (reason === 'dailylimitexceeded' || reason === 'quotaexceeded') return true;
+  if ((info.gbStatus ?? '').toUpperCase() === 'RESOURCE_EXHAUSTED') return true;
+  const message = (info.message ?? '').toLowerCase();
+  return /quer(?:y|ies) per day|daily limit/.test(message);
+}
+
 export interface GoogleBooksResolverOptions {
   baseUrl?: string | undefined;
   apiKey?: string | undefined;
@@ -129,15 +210,27 @@ export interface GoogleBooksResolverOptions {
   retries?: number;
   /** Base backoff (ms), grows linearly; default 400. */
   backoffMs?: number;
+  /**
+   * Breaker cooldown (ms) after a daily-quota 429: the remaining GB calls this window short-circuit
+   * without a request. Default 15m — comfortably longer than one apply wave, shorter than the hourly
+   * re-resolve so the next pass self-heals once Google's daily quota resets.
+   */
+  quotaCooldownMs?: number;
   fetchImpl?: typeof fetch;
   sleepImpl?: (ms: number) => Promise<void>;
+  /** Injectable clock (ms since epoch) so the quota-latch window is testable. */
+  nowImpl?: () => number;
+  /** Where non-200 statuses and the quota-exhaustion line are logged (never the key/URL). */
+  log?: Logger;
 }
 
 const DEFAULT_BASE_URL = 'https://www.googleapis.com/books/v1';
 const DEFAULT_TIMEOUT_MS = 15_000;
 const DEFAULT_RETRIES = 2;
 const DEFAULT_BACKOFF_MS = 400;
+const DEFAULT_QUOTA_COOLDOWN_MS = 15 * 60_000;
 const defaultSleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+const SILENT_LOGGER: Logger = pino({ level: 'silent' });
 
 /** ISBN-first Google Books resolver. `resolveVolume` returns null on no-key / no-match / guard-reject. */
 export class GoogleBooksResolver {
@@ -146,8 +239,13 @@ export class GoogleBooksResolver {
   private readonly timeoutMs: number;
   private readonly retries: number;
   private readonly backoffMs: number;
+  private readonly quotaCooldownMs: number;
   private readonly fetchImpl: typeof fetch;
   private readonly sleepImpl: (ms: number) => Promise<void>;
+  private readonly nowImpl: () => number;
+  private readonly log: Logger;
+  /** Epoch ms until which the daily quota is known-dead (breaker latch); 0 = not latched. */
+  private quotaExhaustedUntil = 0;
 
   constructor(options: GoogleBooksResolverOptions = {}) {
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/+$/, '');
@@ -155,8 +253,36 @@ export class GoogleBooksResolver {
     this.timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.retries = options.retries ?? DEFAULT_RETRIES;
     this.backoffMs = options.backoffMs ?? DEFAULT_BACKOFF_MS;
+    this.quotaCooldownMs = options.quotaCooldownMs ?? DEFAULT_QUOTA_COOLDOWN_MS;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.sleepImpl = options.sleepImpl ?? defaultSleep;
+    this.nowImpl = options.nowImpl ?? Date.now;
+    this.log = options.log ?? SILENT_LOGGER;
+  }
+
+  /** True while the daily-quota breaker is latched (remaining GB calls short-circuit this window). */
+  private quotaLatched(): boolean {
+    return this.quotaExhaustedUntil > this.nowImpl();
+  }
+
+  /** Latch the daily-quota breaker and log ONE clear line per exhaustion window (Google's reset hint if given). */
+  private latchQuota(status: number, info: GbErrorInfo, retryAfterHeader: string | null): void {
+    const now = this.nowImpl();
+    const alreadyLatched = this.quotaExhaustedUntil > now;
+    this.quotaExhaustedUntil = now + this.quotaCooldownMs;
+    if (alreadyLatched) return;
+    const retryAfterSeconds =
+      retryAfterHeader && /^\d+$/.test(retryAfterHeader) ? Number(retryAfterHeader) : undefined;
+    this.log.error(
+      {
+        status,
+        reason: info.reason ?? info.gbStatus,
+        message: info.message,
+        ...(retryAfterSeconds !== undefined ? { retryAfterSeconds } : {}),
+        shortCircuitUntil: new Date(this.quotaExhaustedUntil).toISOString(),
+      },
+      'google books DAILY QUOTA exhausted — short-circuiting remaining Google Books calls this pass (self-heals after the daily reset)',
+    );
   }
 
   /** True when this resolver can actually reach GB (a key is set, or a non-Google test base URL). */
@@ -164,7 +290,7 @@ export class GoogleBooksResolver {
     return Boolean(this.apiKey) || !this.baseUrl.startsWith('https://www.googleapis.com');
   }
 
-  private async getJson(url: string): Promise<unknown | null> {
+  private async getJson(url: string, q: string): Promise<unknown> {
     let attempt = 0;
     for (;;) {
       const controller = new AbortController();
@@ -179,18 +305,53 @@ export class GoogleBooksResolver {
           await this.sleepImpl(this.backoffMs * attempt);
           continue;
         }
-        throw error;
+        // Network/timeout past the retries: a retryable upstream failure, NOT a no-match — surface it.
+        this.log.warn(
+          { q, err: error },
+          'google books request failed (network/timeout, retries exhausted)',
+        );
+        throw new GoogleBooksUpstreamError(
+          'upstream_error',
+          0,
+          error instanceof Error ? error.message : String(error),
+        );
       } finally {
         clearTimeout(timer);
       }
       if (!response.ok) {
-        // 429 (daily quota) and 5xx (backendFailed bursts) are transient — retry then give up to null.
+        const info = parseGbError(await response.text().catch(() => ''));
+        // Observability the incident lacked: log the status + Google's reason on EVERY non-200 (never the key/URL).
+        this.log.warn(
+          {
+            status: response.status,
+            ...(info.reason ? { reason: info.reason } : {}),
+            ...(info.gbStatus ? { gbStatus: info.gbStatus } : {}),
+            ...(info.message ? { message: info.message } : {}),
+            q,
+          },
+          'google books non-200 response',
+        );
+        // A DAILY-quota 429/403: latch the breaker so the rest of this pass short-circuits, then surface.
+        if (isDailyQuotaExhausted(info)) {
+          this.latchQuota(response.status, info, response.headers.get('retry-after'));
+          throw new GoogleBooksUpstreamError(
+            'quota_exhausted',
+            response.status,
+            info.reason ?? info.gbStatus ?? info.message,
+          );
+        }
+        // 429 burst / 5xx backend blips are transient — retry, then give up as a retryable upstream error.
         if ((response.status === 429 || response.status >= 500) && attempt < this.retries) {
           attempt += 1;
           await this.sleepImpl(this.backoffMs * attempt);
           continue;
         }
-        return null;
+        // Any surviving non-200 is an upstream error, NEVER a legit `200 totalItems:0` no-match.
+        throw new GoogleBooksUpstreamError(
+          'upstream_error',
+          response.status,
+          info.reason ?? info.gbStatus ?? info.message,
+        );
       }
       const text = await response.text();
       try {
@@ -204,7 +365,7 @@ export class GoogleBooksResolver {
   private async query(q: string): Promise<Volume[]> {
     const params = new URLSearchParams({ q, maxResults: '5', country: 'US' });
     if (this.apiKey) params.set('key', this.apiKey);
-    const raw = await this.getJson(`${this.baseUrl}/volumes?${params.toString()}`);
+    const raw = await this.getJson(`${this.baseUrl}/volumes?${params.toString()}`, q);
     const items = (raw as { items?: unknown })?.items;
     return Array.isArray(items) ? (items as Volume[]) : [];
   }
@@ -221,6 +382,14 @@ export class GoogleBooksResolver {
    */
   async resolveVolume(input: GbResolveInput): Promise<GbVolume | null> {
     if (!this.enabled) return null;
+    if (this.quotaLatched()) {
+      // Breaker-lite: the daily quota is known-dead this pass — short-circuit before spending a request.
+      throw new GoogleBooksUpstreamError(
+        'quota_exhausted',
+        429,
+        'daily quota latch (short-circuit; no request made)',
+      );
+    }
     if (input.isbn) {
       const [vol] = await this.query(`isbn:${input.isbn}`);
       if (vol) {
