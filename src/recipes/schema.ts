@@ -38,10 +38,24 @@ const targetLibrarySchema = z.strictObject({
 /**
  * Builder set (DESIGN-037 D-05): static_ids (the tracer — the ref IS the ordered
  * identifier list), hardcover_series (the ref is a Hardcover series id or slug;
- * works come back ordered by series position), and nyt_list (the ref is a NYT
- * list_name_encoded slug; works come back ordered by bestseller rank). The
- * provenance-derivation contract keeps the type string exactly `nyt_list`.
- * wikidata_award arrives later.
+ * works come back ordered by series position, at BOOK/work grain), nyt_list (the
+ * ref is a NYT list_name_encoded slug; works come back ordered by bestseller
+ * rank), and hardcover_comics (the ref is an ARRAY of Hardcover series ids/slugs;
+ * each resolves to ONE SERIES-grain unit matched by name — the comics grain, see
+ * the matchGrain note below). The provenance-derivation contract keeps the type
+ * string exactly `nyt_list`. wikidata_award arrives later.
+ *
+ * WHY A SEPARATE COMICS BUILDER (the proven gap, 2026-07-20): Kavita's membership
+ * unit is the SERIES — it stores a whole comic ("Invincible", "Scott Pilgrim") as
+ * ONE series holding its volumes as chapters. hardcover_series emits per-VOLUME
+ * works ("Invincible, Vol. 1: Family Matters"), so matching a Hardcover work
+ * against a Kavita series hits 0/N, and comics expose no scheme'd ISBNs so the
+ * identifier path is dead too. hardcover_comics matches at SERIES grain instead:
+ * the Hardcover series NAME against the Kavita series name (conservative,
+ * noise-stripped, ambiguity-refusing — the same D-04 index). One-or-more series
+ * per recipe build a Kavita COLLECTION of those series (an "Invincible Universe" =
+ * Invincible + Guarding the Globe). Comics acquisition is out of scope (Kapowarr-
+ * land), so acquisitionEnabled is a validation error on this builder (see below).
  */
 export const builderSchema = z.discriminatedUnion('type', [
   z.strictObject({
@@ -56,7 +70,19 @@ export const builderSchema = z.discriminatedUnion('type', [
     type: z.literal('nyt_list'),
     ref: z.string().min(1),
   }),
+  z.strictObject({
+    type: z.literal('hardcover_comics'),
+    ref: z.array(z.union([z.string().min(1), z.number().int().positive()])).min(1),
+  }),
 ]);
+
+/** Builder types that match at SERIES grain (Hardcover series name -> target series). */
+const SERIES_GRAIN_BUILDERS = new Set(['hardcover_comics']);
+
+/** Whether a recipe's builder matches at series grain (comics) rather than work grain. */
+export function isSeriesGrain(builder: Builder): boolean {
+  return SERIES_GRAIN_BUILDERS.has(builder.type);
+}
 
 const variablesSchema = z.strictObject({
   syncMode: z.enum(['append', 'sync']),
@@ -73,15 +99,30 @@ const variablesSchema = z.strictObject({
   schedule: scheduleSchema,
 });
 
-export const recipeSchema = z.strictObject({
-  id: z.string().regex(RECIPE_ID_PATTERN, 'id must match ' + RECIPE_ID_PATTERN.source),
-  targetLibrary: targetLibrarySchema,
-  name: z.string().min(1),
-  builder: builderSchema,
-  variables: variablesSchema,
-  enabled: z.boolean(),
-});
+export const recipeSchema = z
+  .strictObject({
+    id: z.string().regex(RECIPE_ID_PATTERN, 'id must match ' + RECIPE_ID_PATTERN.source),
+    targetLibrary: targetLibrarySchema,
+    name: z.string().min(1),
+    builder: builderSchema,
+    variables: variablesSchema,
+    enabled: z.boolean(),
+  })
+  .superRefine((recipe, ctx) => {
+    // Comics recipes are GROUPING-ONLY: comics acquisition is Kapowarr-land and
+    // explicitly out of Libretto's scope (the app excludes comics from force-
+    // search). Fail fast rather than silently no-op, so the intent is honest.
+    if (isSeriesGrain(recipe.builder) && recipe.variables.acquisitionEnabled) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['variables', 'acquisitionEnabled'],
+        message:
+          'comics recipes (hardcover_comics) cannot acquire — comics acquisition is out of scope; set acquisitionEnabled: false',
+      });
+    }
+  });
 
+export type Builder = z.infer<typeof builderSchema>;
 export type Recipe = z.infer<typeof recipeSchema>;
 export type RecipeInput = z.input<typeof recipeSchema>;
 

@@ -82,6 +82,21 @@ interface HardcoverSearchData {
   } | null;
 }
 
+/**
+ * Series METADATA only (name/slug/id) for the comics grain (hardcover_comics). At series grain a
+ * whole Hardcover series maps to ONE target series by name, so resolving book_series + editions
+ * (which SERIES_QUERY does) would be wasted work — this fetches just what the series-name match
+ * needs. Still depth-safe (single flat select).
+ */
+const SERIES_META_QUERY = `
+query LibrettoComicSeries($where: series_bool_exp!) {
+  series(where: $where, limit: 1) {
+    id
+    name
+    slug
+  }
+}`;
+
 const SERIES_QUERY = `
 query LibrettoSeriesWorks($where: series_bool_exp!) {
   series(where: $where, limit: 1) {
@@ -155,6 +170,16 @@ interface EditionsQueryData {
     isbn_10: string | null;
     asin: string | null;
   }[];
+}
+
+interface SeriesMetaQueryData {
+  series: { id: number; name: string; slug: string }[];
+}
+
+/** A comics-grain series unit: the Hardcover series id (for dedup) plus its series-name WorkItem. */
+interface ComicSeriesUnit {
+  id: number;
+  work: WorkItem;
 }
 
 export class HardcoverSeriesSource {
@@ -259,6 +284,61 @@ export class HardcoverSeriesSource {
       'hardcover: resolved series',
     );
     return works;
+  }
+
+  /**
+   * Resolve a SET of Hardcover series refs to SERIES-grain works for the comics grain
+   * (hardcover_comics builder). Each ref becomes ONE WorkItem whose `title` is the Hardcover
+   * series NAME — the unit the series-grain matcher pairs (by conservative name equality) with a
+   * single target series. No volumes, no identifiers (comics expose none); acquisition is out of
+   * scope. Deduplicated by Hardcover series id (a ref repeated, or two refs resolving to the same
+   * series, collapses), preserving ref order = collection order.
+   */
+  async comicSeries(refs: readonly string[]): Promise<WorkItem[]> {
+    const works: WorkItem[] = [];
+    const seen = new Set<number>();
+    for (const ref of refs) {
+      const unit = await this.comicSeriesUnit(String(ref));
+      if (seen.has(unit.id)) continue;
+      seen.add(unit.id);
+      works.push(unit.work);
+    }
+    return works;
+  }
+
+  /** Resolve one series ref (numeric id or slug) to its series-name unit (cached, own key space). */
+  private async comicSeriesUnit(ref: string): Promise<ComicSeriesUnit> {
+    // Own cache namespace, independent of series-works: this shape is {id, name-only WorkItem},
+    // so it never collides with (or is invalidated by) the series-works:vN key. Bump this vN if
+    // the ComicSeriesUnit shape ever changes, or a live pod serves stale entries for the full TTL.
+    const cacheKey = `hardcover:comic-series:v1:${ref}`;
+    const cached = await this.options.cache.get<ComicSeriesUnit>(cacheKey);
+    if (cached !== undefined) {
+      this.options.log.debug(
+        { ref, series: cached.work.title },
+        'hardcover: comic-series cache hit',
+      );
+      return cached;
+    }
+
+    const where = /^\d+$/.test(ref) ? { id: { _eq: Number(ref) } } : { slug: { _eq: ref } };
+    const data = await this.request<SeriesMetaQueryData>(SERIES_META_QUERY, { where });
+    const series = data.series[0];
+    if (!series) {
+      throw new Error(`hardcover series "${ref}" not found (ref must be a series id or slug)`);
+    }
+    const unit: ComicSeriesUnit = {
+      id: series.id,
+      // At series grain the series NAME is both the match key (title) and the missing-report handle
+      // (label). identifiers stays empty — comics carry no scheme'd ISBNs, matching is name-only.
+      work: { identifiers: [], label: series.name, title: series.name },
+    };
+    await this.options.cache.set(cacheKey, unit, this.cacheTtlMs);
+    this.options.log.info(
+      { ref, series: series.slug, name: series.name },
+      'hardcover: resolved comic series',
+    );
+    return unit;
   }
 
   /**

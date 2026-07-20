@@ -140,6 +140,19 @@ describe('HardcoverSeriesSource', () => {
       if (body.query.includes('LibrettoSeriesSearch')) {
         return c.json({ data: SEARCH_FIXTURE });
       }
+      if (body.query.includes('LibrettoComicSeries')) {
+        // Series METADATA only (comics grain): resolve id/slug to {id, name, slug}.
+        const raw = JSON.stringify((body.variables as { where: Record<string, unknown> }).where);
+        const known = [
+          { id: 14911, name: 'Invincible', slug: 'invincible' },
+          { id: 20000, name: 'Guarding the Globe', slug: 'guarding-the-globe' },
+          { id: 1793, name: 'Scott Pilgrim', slug: 'scott-pilgrim' },
+        ];
+        const hit = known.find(
+          (s) => raw.includes(`"${s.id}"`) || raw.includes(`:${s.id}}`) || raw.includes(s.slug),
+        );
+        return c.json({ data: { series: hit ? [hit] : [] } });
+      }
       return c.json({ errors: [{ message: 'unknown operation' }] });
     });
     const server = await startStubServer(app);
@@ -250,6 +263,39 @@ describe('HardcoverSeriesSource', () => {
     const second = await source.searchSeries('stormlight', 8);
     expect(second).toEqual(first);
     expect(requests.length).toBe(before);
+  });
+
+  it('resolves a set of comic series refs to series-NAME works (id or slug, no identifiers)', async () => {
+    const works = await source.comicSeries(['14911', 'guarding-the-globe']);
+    // Each ref becomes ONE series-grain work: title = series name (the match key), no identifiers.
+    expect(works).toEqual([
+      { identifiers: [], label: 'Invincible', title: 'Invincible' },
+      { identifiers: [], label: 'Guarding the Globe', title: 'Guarding the Globe' },
+    ]);
+    // Numeric ref queries by id; slug ref queries by slug.
+    const comicRequests = requests.filter((r) => r.query.includes('LibrettoComicSeries'));
+    expect(comicRequests[0]!.variables).toEqual({ where: { id: { _eq: 14911 } } });
+    expect(comicRequests[1]!.variables).toEqual({ where: { slug: { _eq: 'guarding-the-globe' } } });
+  });
+
+  it('deduplicates comic series by resolved series id, preserving ref order', async () => {
+    // The same series named twice (once by id, once by slug) collapses to one work.
+    const works = await source.comicSeries(['14911', 'invincible', '1793']);
+    expect(works.map((w) => w.title)).toEqual(['Invincible', 'Scott Pilgrim']);
+  });
+
+  it('serves repeat comic-series resolutions from the disk cache (own key space)', async () => {
+    await source.comicSeries(['14911']);
+    const before = requests.length;
+    const again = await source.comicSeries(['14911']);
+    expect(again).toEqual([{ identifiers: [], label: 'Invincible', title: 'Invincible' }]);
+    expect(requests.length).toBe(before);
+  });
+
+  it('throws honestly when a comic series ref does not resolve', async () => {
+    await expect(source.comicSeries(['no-such-series'])).rejects.toThrow(
+      'hardcover series "no-such-series" not found',
+    );
   });
 
   it('surfaces graphql errors as errors', async () => {

@@ -8,6 +8,7 @@ import type { RunQueue } from '../core/queue.js';
 import type { Logger } from '../logger.js';
 import {
   builderSchema,
+  isSeriesGrain,
   recipeSchema,
   zodIssuesToValidationIssues,
   type ValidationIssue,
@@ -277,7 +278,10 @@ export function createApp(deps: AppDeps): Hono {
     const { libraryId, server } = recipe.targetLibrary;
     try {
       const items = await targets.for(server).listItems(libraryId);
-      const { matchedIds, missingWorks } = matchWorks(works, items, recipe.variables.titleFallback);
+      const { matchedIds, missingWorks } = matchWorks(works, items, {
+        titleFallback: recipe.variables.titleFallback,
+        grain: isSeriesGrain(recipe.builder) ? 'series' : 'work',
+      });
       return c.json({
         recipeId: recipe.id,
         server,

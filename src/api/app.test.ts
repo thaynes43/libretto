@@ -512,6 +512,7 @@ describe('API', () => {
         'static_ids',
         'hardcover_series',
         'nyt_list',
+        'hardcover_comics',
       ]);
       const targetsRes = await app.request('/api/targets', { headers: auth });
       expect(((await targetsRes.json()) as { targets: unknown[] }).targets).toHaveLength(2);

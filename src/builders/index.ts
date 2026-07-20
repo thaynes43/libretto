@@ -76,6 +76,11 @@ export interface BuilderContext {
   /** Hardcover series source (undefined until HARDCOVER_TOKEN is set). */
   hardcoverSeries?: {
     seriesWorks(ref: string): Promise<WorkItem[]>;
+    /**
+     * Resolve a set of series refs to SERIES-grain works (the comics grain, hardcover_comics).
+     * Optional like searchSeries so lightweight stubs need not implement it; validated at use.
+     */
+    comicSeries?(refs: readonly string[]): Promise<WorkItem[]>;
     /** Typeahead search over Hardcover series (M4 builder page); optional (validated at use). */
     searchSeries?(query: string, limit: number): Promise<BuilderSearchResponse>;
   };
@@ -125,6 +130,17 @@ export function builderInfos(ctx: BuilderContext): BuilderInfo[] {
       available: ctx.nytList !== undefined,
       ...(ctx.nytList === undefined ? { note: 'set NYT_API_KEY to enable' } : {}),
     },
+    {
+      type: 'hardcover_comics',
+      description:
+        'One-or-more Hardcover comic series, matched at SERIES grain (series name -> your target ' +
+        'series) and grouped into a collection — for comics/manga a target holds as one series of ' +
+        'volume-chapters, where per-volume matching cannot work. Grouping-only: acquisition is out ' +
+        'of scope, so acquisitionEnabled must stay false.',
+      ref: 'an array of Hardcover series ids or slugs (search each with type=hardcover_comics)',
+      available: ctx.hardcoverSeries !== undefined,
+      ...(ctx.hardcoverSeries === undefined ? { note: 'set HARDCOVER_TOKEN to enable' } : {}),
+    },
   ];
 }
 
@@ -163,6 +179,15 @@ export async function resolveBuilder(
       }
       return ctx.nytList.listWorks(builder.ref);
     }
+    case 'hardcover_comics': {
+      if (!ctx.hardcoverSeries?.comicSeries) {
+        throw new Error(
+          'the hardcover_comics builder needs HARDCOVER_TOKEN (validated at use, not at boot)',
+        );
+      }
+      // The comics grain: each ref -> one SERIES-grain work (matched by name, not identifier).
+      return ctx.hardcoverSeries.comicSeries(builder.ref.map(String));
+    }
   }
 }
 
@@ -183,9 +208,11 @@ export async function searchBuilder(
     case 'static_ids':
       // Free-form identifier entry — there is nothing to search.
       return { results: [], truncated: false };
-    case 'hardcover_series': {
+    case 'hardcover_series':
+    case 'hardcover_comics': {
+      // Both build off Hardcover series; the comics grain adds each hit's ref to the ref[] array.
       if (!ctx.hardcoverSeries?.searchSeries) {
-        throw new BuilderUnavailableError('hardcover_series search needs HARDCOVER_TOKEN');
+        throw new BuilderUnavailableError(`${type} search needs HARDCOVER_TOKEN`);
       }
       if (q.length === 0) return { results: [], truncated: false };
       return ctx.hardcoverSeries.searchSeries(q, limit);
