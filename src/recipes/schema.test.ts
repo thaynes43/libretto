@@ -39,6 +39,45 @@ describe('recipeSchema', () => {
     expect(recipeSchema.safeParse(recipe).success).toBe(true);
   });
 
+  it('accepts a hardcover_comics builder with a series-ref array (ids and/or slugs)', () => {
+    const recipe = {
+      ...makeRecipe(),
+      builder: { type: 'hardcover_comics', ref: [14911, 'guarding-the-globe'] },
+    };
+    expect(recipeSchema.safeParse(recipe).success).toBe(true);
+  });
+
+  it('rejects an empty hardcover_comics ref array', () => {
+    const recipe = { ...makeRecipe(), builder: { type: 'hardcover_comics', ref: [] } };
+    expect(recipeSchema.safeParse(recipe).success).toBe(false);
+  });
+
+  it('rejects acquisitionEnabled on a comics recipe (grouping-only, out of scope)', () => {
+    const base = makeRecipe();
+    const recipe = {
+      ...base,
+      builder: { type: 'hardcover_comics', ref: ['invincible'] },
+      variables: { ...base.variables, acquisitionEnabled: true },
+    };
+    const parsed = recipeSchema.safeParse(recipe);
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(
+        parsed.error.issues.some((i) => i.path.join('.') === 'variables.acquisitionEnabled'),
+      ).toBe(true);
+    }
+  });
+
+  it('accepts a comics recipe when acquisitionEnabled is false', () => {
+    const base = makeRecipe();
+    const recipe = {
+      ...base,
+      builder: { type: 'hardcover_comics', ref: ['invincible'] },
+      variables: { ...base.variables, acquisitionEnabled: false },
+    };
+    expect(recipeSchema.safeParse(recipe).success).toBe(true);
+  });
+
   it('rejects a bad cron schedule', () => {
     const recipe = makeRecipe();
     recipe.variables.schedule = 'every full moon';

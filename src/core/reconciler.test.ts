@@ -341,3 +341,83 @@ describe('reconcileRecipe — D-04 conservative title fallback', () => {
     expect(result.missing).toEqual(['The Gathering']);
   });
 });
+
+describe('reconcileRecipe — comics (series grain, hardcover_comics)', () => {
+  /** A Kavita-like comics library: one series per comic, no ISBNs (volumes are chapters). */
+  const seedComics = () => {
+    const target = makeSeededTarget();
+    target.seedLibrary({
+      id: 'lib-1',
+      name: 'Comics',
+      items: [
+        { id: 's-invincible', title: 'Invincible', identifiers: [] },
+        { id: 's-guarding', title: 'Guarding the Globe', identifiers: [] },
+        { id: 's-scott', title: 'Scott Pilgrim', identifiers: [] },
+      ],
+    });
+    return target;
+  };
+  /** A builder context whose comicSeries returns series-name works (title = series name). */
+  const comicsCtx = (names: string[]) => ({
+    hardcoverSeries: {
+      seriesWorks: () => Promise.resolve([]),
+      comicSeries: () =>
+        Promise.resolve(names.map((name) => ({ identifiers: [], label: name, title: name }))),
+    },
+  });
+  const comicsRecipe = (overrides = {}) =>
+    makeRecipe({
+      builder: { type: 'hardcover_comics', ref: ['invincible', 'guarding-the-globe'] },
+      variables: {
+        syncMode: 'sync',
+        ordered: false, // comics sweet spot: an unordered collection of series
+        acquisitionEnabled: false,
+        titleFallback: true,
+        schedule: 'manual',
+      },
+      ...overrides,
+    });
+
+  it('builds a multi-series collection from series-name matches (an Invincible Universe)', async () => {
+    const target = seedComics();
+    const recipe = comicsRecipe();
+
+    const result = await reconcileRecipe(
+      recipe,
+      target,
+      silentLogger,
+      comicsCtx(['Invincible', 'Guarding the Globe']),
+    );
+
+    const [collection] = await target.listCollections('lib-1');
+    expect(collection?.itemIds).toEqual(['s-invincible', 's-guarding']);
+    expect(collection?.description).toContain('[libretto:test-recipe]');
+    expect(result.counts).toEqual({
+      matched: 2,
+      matchedByTitle: 2, // both matched by conservative series-name equality
+      written: 2,
+      added: 2,
+      removed: 0,
+      missing: 0,
+    });
+  });
+
+  it('reports a series the library lacks as missing[] (conservative, still writes the hits)', async () => {
+    const target = seedComics();
+    const recipe = comicsRecipe({
+      builder: { type: 'hardcover_comics', ref: ['invincible', 'the-walking-dead'] },
+    });
+
+    const result = await reconcileRecipe(
+      recipe,
+      target,
+      silentLogger,
+      comicsCtx(['Invincible', 'The Walking Dead']),
+    );
+
+    expect(result.counts.matched).toBe(1);
+    expect(result.missing).toEqual(['The Walking Dead']);
+    const [collection] = await target.listCollections('lib-1');
+    expect(collection?.itemIds).toEqual(['s-invincible']);
+  });
+});

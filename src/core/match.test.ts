@@ -26,7 +26,7 @@ describe('matchWorks', () => {
       }),
       work({ identifiers: ['isbn:9781111111111'], label: 'Nemesis Games', title: 'Nemesis Games' }),
     ];
-    const r = matchWorks(works, items, true);
+    const r = matchWorks(works, items, { titleFallback: true });
     expect(r.matchedIds).toEqual(['i1', 'i2']);
     expect(r.matchedByTitle).toBe(1); // Project Hail Mary via title
     expect(r.missingWorks.map((w) => w.label)).toEqual(['Nemesis Games']);
@@ -41,7 +41,82 @@ describe('matchWorks', () => {
         authors: ['Andy Weir'],
       }),
     ];
-    const r = matchWorks(works, items, false);
+    const r = matchWorks(works, items, { titleFallback: false });
+    expect(r.matchedIds).toEqual([]);
+    expect(r.missingWorks).toHaveLength(1);
+  });
+});
+
+describe('matchWorks — series grain (comics)', () => {
+  // A Kavita-like comics library: each comic is ONE series (volumes are chapters), no ISBNs.
+  const comicsLibrary: TargetItem[] = [
+    { id: 's-invincible', title: 'Invincible', identifiers: [] },
+    { id: 's-guarding', title: 'Guarding the Globe', identifiers: [] },
+    { id: 's-scott', title: 'Scott Pilgrim', identifiers: [] },
+  ];
+  // Series-grain works: title = the Hardcover series name, no identifiers (comics expose none).
+  const seriesWork = (name: string): WorkItem => ({ identifiers: [], label: name, title: name });
+
+  it('matches a Hardcover series to a target series by conservative name equality', () => {
+    const r = matchWorks([seriesWork('Invincible')], comicsLibrary, {
+      titleFallback: false, // irrelevant at series grain — name equality is always the path
+      grain: 'series',
+    });
+    expect(r.matchedIds).toEqual(['s-invincible']);
+    expect(r.matchedVia).toEqual(['series']);
+    expect(r.matchedByTitle).toBe(1); // flagged as a name (not identifier) match
+    expect(r.missingWorks).toHaveLength(0);
+  });
+
+  it('builds a MULTI-series collection (an "Invincible Universe")', () => {
+    const r = matchWorks(
+      [seriesWork('Invincible'), seriesWork('Guarding the Globe')],
+      comicsLibrary,
+      {
+        titleFallback: true,
+        grain: 'series',
+      },
+    );
+    expect(r.matchedIds).toEqual(['s-invincible', 's-guarding']);
+    expect(r.matchedVia).toEqual(['series', 'series']);
+    expect(r.missingWorks).toHaveLength(0);
+  });
+
+  it('strips parenthetical noise from a series name but still refuses a divergent name', () => {
+    const r = matchWorks(
+      [seriesWork('Invincible (2003)'), seriesWork('Invincible Compendium')],
+      comicsLibrary,
+      { titleFallback: true, grain: 'series' },
+    );
+    // "Invincible (2003)" normalizes to "invincible" and matches; the Compendium is an honest miss.
+    expect(r.matchedIds).toEqual(['s-invincible']);
+    expect(r.missingWorks.map((w) => w.label)).toEqual(['Invincible Compendium']);
+  });
+
+  it('refuses a library-side ambiguous series name rather than guess', () => {
+    const ambiguous: TargetItem[] = [
+      { id: 'a-1', title: 'Invincible', identifiers: [] },
+      { id: 'a-2', title: 'Invincible', identifiers: [] },
+    ];
+    const r = matchWorks([seriesWork('Invincible')], ambiguous, {
+      titleFallback: true,
+      grain: 'series',
+    });
+    expect(r.matchedIds).toEqual([]);
+    expect(r.missingWorks.map((w) => w.label)).toEqual(['Invincible']);
+  });
+
+  it('does not read identifiers at series grain (name is the only key)', () => {
+    // A work whose identifiers happen to collide with a target item still only matches by NAME.
+    const work: WorkItem = {
+      identifiers: ['isbn:9780316129084'],
+      label: 'Nonexistent Series',
+      title: 'Nonexistent Series',
+    };
+    const withIdItem: TargetItem[] = [
+      { id: 's-x', title: 'Something Else', identifiers: ['isbn:9780316129084'] },
+    ];
+    const r = matchWorks([work], withIdItem, { titleFallback: true, grain: 'series' });
     expect(r.matchedIds).toEqual([]);
     expect(r.missingWorks).toHaveLength(1);
   });

@@ -1,0 +1,48 @@
+# Example Libretto recipe: a COMICS collection (series grain).
+#
+# Needs HARDCOVER_TOKEN and a real Kavita (KAVITA_URL + KAVITA_API_KEY). This is
+# the comics grain (hardcover_comics builder): unlike hardcover_series, which
+# emits per-VOLUME works, this matches at SERIES grain — the Hardcover series
+# NAME against your target's series name. Kavita stores a whole comic as ONE
+# series holding its volumes as chapters, so per-volume matching cannot work and
+# comics expose no scheme'd ISBNs; series-name equality is the honest match.
+#
+# One-or-more series in `ref` become a single Kavita COLLECTION of those series —
+# a multi-series "universe" (Invincible + Guarding the Globe) is the real value.
+# Matching is conservative: noise-stripped exact series-name equality, ambiguity
+# refused (a name that maps to two series lands in missing[] rather than mispair).
+
+id: invincible-universe-comics
+
+targetLibrary:
+  server: kavita
+  # A real Comics library id from GET /api/targets (Kavita library ids are
+  # numeric strings).
+  libraryId: '2'
+
+name: 'Invincible Universe'
+
+builder:
+  type: hardcover_comics
+  # An ARRAY of Hardcover series ids or slugs. Find each with the search endpoint
+  # (GET /api/search?type=hardcover_comics&q=invincible) and paste its ref.
+  ref:
+    - 14911 # Invincible
+    - guarding-the-globe # a spin-off in the same universe
+
+variables:
+  syncMode: sync
+  # ordered: false -> a Kavita COLLECTION of the matched series (the comics sweet
+  # spot). ordered: true instead produces a reading list that concatenates each
+  # matched series' volumes in ref order (per-series natural volume order; NOT a
+  # Hardcover-global interleave — see the README).
+  ordered: false
+  # Comics are GROUPING-ONLY: acquisition is out of scope (Kapowarr-land), so
+  # acquisitionEnabled must stay false — true is a validation error on this builder.
+  acquisitionEnabled: false
+  # titleFallback is irrelevant at series grain (series-name equality is always
+  # the match path); left true for parity with other recipes.
+  titleFallback: true
+  schedule: '0 5 * * *' # re-resolve and reconcile daily at 05:00
+
+enabled: true

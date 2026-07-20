@@ -13,49 +13,88 @@ export interface MatchResult {
   matchedIds: string[];
   /** Set of matched target item ids (a run never binds two works to one item). */
   matchedSeen: Set<string>;
-  /** Subset of matches resolved by the D-04 title fallback rather than an identifier. */
+  /**
+   * Subset of matches resolved by conservative NAME equality rather than an identifier: the D-04
+   * title fallback (work grain) OR the series-name match (series grain). Both use the same
+   * noise-stripped, ambiguity-refusing index, so both are "flagged" here to stay distinguishable
+   * from an identifier match. `matchedVia` carries the finer 'title' vs 'series' provenance.
+   */
   matchedByTitle: number;
   /** Per-work match provenance, in work order (undefined = unmatched). */
-  matchedVia: (('identifier' | 'title') | undefined)[];
+  matchedVia: (('identifier' | 'title' | 'series') | undefined)[];
   /** The full unmatched works (identities, not just labels) — feeds acquisition + the missing endpoint. */
   missingWorks: WorkItem[];
 }
 
-/**
- * Match an ordered work list against a target's library items. `titleFallbackEnabled` mirrors the
- * recipe's `variables.titleFallback` (identifier-only matching when false).
- */
+export interface MatchOptions {
+  /**
+   * D-04 conservative title fallback (WORK grain only): when identifier matching leaves a work
+   * unmatched, try a noise-stripped exact-title (+ author guard) match. Mirrors the recipe's
+   * variables.titleFallback; false pins a work-grain recipe to identifier-only matching.
+   */
+  titleFallback: boolean;
+  /**
+   * Match grain (comics support, 2026-07-20):
+   *   - 'work' (default): each work is a book/volume, matched by identifier then the D-04 title
+   *     fallback. The historical behavior.
+   *   - 'series': each work IS a whole series (comics/manga), matched by conservative normalized
+   *     SERIES-NAME equality against the target's series — because a target like Kavita stores a
+   *     whole comic as ONE series of volume-chapters, so per-volume matching hits 0/N and comics
+   *     expose no scheme'd ISBNs. There is no identifier path at series grain and `titleFallback`
+   *     is irrelevant (name equality IS the match, always on). Matches flag matchedVia 'series'.
+   */
+  grain?: 'work' | 'series';
+}
+
+/** Match an ordered work list against a target's library items (work grain by default). */
 export function matchWorks(
   works: readonly WorkItem[],
   items: readonly TargetItem[],
-  titleFallbackEnabled: boolean,
+  options: MatchOptions,
 ): MatchResult {
+  const grain = options.grain ?? 'work';
+  const seriesGrain = grain === 'series';
+
   const byIdentifier = new Map<string, TargetItem>();
-  for (const item of items) {
-    for (const identifier of item.identifiers) {
-      if (!byIdentifier.has(identifier)) byIdentifier.set(identifier, item);
+  if (!seriesGrain) {
+    for (const item of items) {
+      for (const identifier of item.identifiers) {
+        if (!byIdentifier.has(identifier)) byIdentifier.set(identifier, item);
+      }
     }
   }
-  const titleIndex = titleFallbackEnabled ? new TitleIndex(items as TargetItem[]) : undefined;
+  // The name index backs both the D-04 title fallback (work grain, opt-out) and series-grain
+  // matching (always on — it is the sole match path there).
+  const nameIndex =
+    seriesGrain || options.titleFallback ? new TitleIndex(items as TargetItem[]) : undefined;
 
   const matchedIds: string[] = [];
   const matchedSeen = new Set<string>();
   const missingWorks: WorkItem[] = [];
-  const matchedVia: (('identifier' | 'title') | undefined)[] = [];
+  const matchedVia: (('identifier' | 'title' | 'series') | undefined)[] = [];
   let matchedByTitle = 0;
 
   for (const work of works) {
-    let via: 'identifier' | 'title' | undefined;
-    let item = work.identifiers
-      .map((identifier) => byIdentifier.get(identifier))
-      .find((candidate) => candidate !== undefined);
-    if (item) {
-      via = 'identifier';
-    } else if (titleIndex) {
-      const candidate = titleIndex.match(work.title, work.authors, matchedSeen);
+    let via: 'identifier' | 'title' | 'series' | undefined;
+    let item: TargetItem | undefined;
+    if (seriesGrain) {
+      const candidate = nameIndex!.match(work.title, work.authors, matchedSeen);
       if (candidate) {
         item = items.find((one) => one.id === candidate.id);
-        via = 'title';
+        via = 'series';
+      }
+    } else {
+      item = work.identifiers
+        .map((identifier) => byIdentifier.get(identifier))
+        .find((candidate) => candidate !== undefined);
+      if (item) {
+        via = 'identifier';
+      } else if (nameIndex) {
+        const candidate = nameIndex.match(work.title, work.authors, matchedSeen);
+        if (candidate) {
+          item = items.find((one) => one.id === candidate.id);
+          via = 'title';
+        }
       }
     }
 
@@ -66,7 +105,7 @@ export function matchWorks(
       matchedSeen.add(item.id);
       matchedIds.push(item.id);
       matchedVia.push(via);
-      if (via === 'title') matchedByTitle += 1;
+      if (via === 'title' || via === 'series') matchedByTitle += 1;
     } else {
       // The item is already claimed by an earlier work — this work neither matches nor is missing.
       matchedVia.push(via);

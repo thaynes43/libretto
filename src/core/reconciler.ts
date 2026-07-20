@@ -1,7 +1,7 @@
 import { acquireMissing, type AcquireContext } from '../acquire/acquire.js';
 import type { LlFormat } from '../acquire/lazylibrarian.js';
 import { resolveBuilder, type BuilderContext } from '../builders/index.js';
-import type { Recipe } from '../recipes/schema.js';
+import { isSeriesGrain, type Recipe } from '../recipes/schema.js';
 import type { RecipeRunResult } from '../runs/store.js';
 import { buildCollectionDescription, recipeIdFromDescription } from '../target/marker.js';
 import type { TargetClient } from '../target/types.js';
@@ -35,22 +35,23 @@ export async function reconcileRecipe(
   const works = await resolveBuilder(recipe.builder, builderCtx);
   const items = await target.listItems(libraryId);
 
-  // D-04 conservative title fallback (default on, per-recipe opt-out via
-  // variables.titleFallback). Identifier matching stays the ceiling; only works
-  // it leaves unmatched are offered to the noise-stripped exact-title matcher,
-  // which refuses ambiguity rather than guess. The shared matcher (core/match.ts)
-  // is the single source both this reconcile and the missing endpoint use, so a
-  // book counted `missing` here is exactly one the endpoint reports.
-  const { matchedIds, matchedSeen, matchedByTitle, missingWorks } = matchWorks(
-    works,
-    items,
-    recipe.variables.titleFallback,
-  );
+  // Match grain (comics support): series-grain recipes (hardcover_comics) pair a whole Hardcover
+  // series to one target series by conservative NAME equality; work-grain recipes pair each book by
+  // identifier then the D-04 title fallback (default on, per-recipe opt-out via titleFallback). Both
+  // go through the single shared matcher (core/match.ts) that the missing endpoint also uses, so a
+  // member counted `missing` here is exactly one the endpoint reports.
+  const grain = isSeriesGrain(recipe.builder) ? 'series' : 'work';
+  const { matchedIds, matchedSeen, matchedByTitle, missingWorks } = matchWorks(works, items, {
+    titleFallback: recipe.variables.titleFallback,
+    grain,
+  });
   const missing = missingWorks.map((work) => work.label);
   if (matchedByTitle > 0) {
     log.info(
       { recipeId: recipe.id, matchedByTitle },
-      'matched by conservative title fallback (no identifier hit)',
+      grain === 'series'
+        ? 'matched by conservative series-name equality'
+        : 'matched by conservative title fallback (no identifier hit)',
     );
   }
 
