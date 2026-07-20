@@ -209,7 +209,10 @@ describe('acquireMissing', () => {
       const ll = new FakeLazyLibrarian([]);
       const resolve = {
         resolve: vi.fn(() =>
-          Promise.resolve({ volumeId: 'VOL_DUNE', isbn13: '9780441172719', via: 'isbn' as const }),
+          Promise.resolve({
+            resolved: { volumeId: 'VOL_DUNE', isbn13: '9780441172719', via: 'isbn' as const },
+            reason: 'resolved' as const,
+          }),
         ),
       };
       const counts = await acquireMissing(
@@ -230,7 +233,10 @@ describe('acquireMissing', () => {
       const ll = new FakeLazyLibrarian([]);
       const resolve = {
         resolve: vi.fn(() =>
-          Promise.resolve({ volumeId: 'VOL_AO', isbn13: null, via: 'title' as const }),
+          Promise.resolve({
+            resolved: { volumeId: 'VOL_AO', isbn13: null, via: 'title' as const },
+            reason: 'resolved' as const,
+          }),
         ),
       };
       const counts = await acquireMissing(
@@ -246,7 +252,9 @@ describe('acquireMissing', () => {
 
     it('falls back to addBookByISBN when the broker resolves nothing but an ISBN exists', async () => {
       const ll = new FakeLazyLibrarian([]);
-      const resolve = { resolve: vi.fn(() => Promise.resolve(null)) };
+      const resolve = {
+        resolve: vi.fn(() => Promise.resolve({ resolved: null, reason: 'no_match' as const })),
+      };
       const counts = await acquireMissing(
         'r',
         [work({ identifiers: ['isbn:9780441172719'], label: 'Dune', title: 'Dune' })],
@@ -260,7 +268,9 @@ describe('acquireMissing', () => {
 
     it('skips (no LL write) when the broker resolves nothing and there is no ISBN', async () => {
       const ll = new FakeLazyLibrarian([]);
-      const resolve = { resolve: vi.fn(() => Promise.resolve(null)) };
+      const resolve = {
+        resolve: vi.fn(() => Promise.resolve({ resolved: null, reason: 'no_match' as const })),
+      };
       const counts = await acquireMissing(
         'r',
         [work({ identifiers: ['asin:B0071IHYRW'], label: 'Audio Only', title: 'Audio Only' })],

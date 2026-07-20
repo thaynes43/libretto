@@ -1,9 +1,13 @@
 import { describe, expect, it } from 'vitest';
+import type { Logger } from '../logger.js';
 import {
   gbQueryTitle,
   gbAuthorsMatch,
   gbResolveTitleMatches,
+  isDailyQuotaExhausted,
+  parseGbError,
   GoogleBooksResolver,
+  GoogleBooksUpstreamError,
 } from './google-books.js';
 
 /** Build a fake fetch that answers each GB `q=` with a canned volumes payload (or empty). */
@@ -115,5 +119,181 @@ describe('GoogleBooksResolver.resolveVolume', () => {
     // first the full title missed, then the pre-colon retry hit.
     expect(queries).toContain('intitle:Dead Ever After: A Sookie Stackhouse Novel');
     expect(queries).toContain('intitle:Dead Ever After');
+  });
+});
+
+// --- The 2026-07-20 observability + honesty fix: non-200s are never a silent no-match.
+
+/** A daily-quota 429 body, carrying every signal Google emits for it (RESOURCE_EXHAUSTED + "Queries per day"). */
+const QUOTA_BODY = {
+  error: {
+    code: 429,
+    message:
+      "Quota exceeded for quota metric 'Queries' and limit 'Queries per day' of service 'books.googleapis.com'.",
+    errors: [{ reason: 'dailyLimitExceeded', message: 'Daily Limit Exceeded' }],
+    status: 'RESOURCE_EXHAUSTED',
+  },
+};
+
+/** A fetch that always answers with `status`/`body`, counting the calls it actually served. */
+function statusFetch(
+  status: number,
+  body: unknown,
+  headers?: Record<string, string>,
+): { fetchImpl: typeof fetch; calls: () => number } {
+  let n = 0;
+  const fetchImpl = (async (): Promise<Response> => {
+    n += 1;
+    return new Response(JSON.stringify(body), { status, ...(headers ? { headers } : {}) });
+  }) as unknown as typeof fetch;
+  return { fetchImpl, calls: () => n };
+}
+
+/** A logger that records every (level, obj, msg) entry, for asserting the status was actually logged. */
+function captureLogger(): { log: Logger; entries: { level: string; obj: unknown; msg: string }[] } {
+  const entries: { level: string; obj: unknown; msg: string }[] = [];
+  const at =
+    (level: string) =>
+    (obj: unknown, msg?: string): void => {
+      entries.push(
+        typeof obj === 'string' ? { level, obj: {}, msg: obj } : { level, obj, msg: msg ?? '' },
+      );
+    };
+  const log = {
+    warn: at('warn'),
+    error: at('error'),
+    debug: at('debug'),
+    info: at('info'),
+  } as unknown as Logger;
+  return { log, entries };
+}
+
+describe('parseGbError / isDailyQuotaExhausted', () => {
+  it('extracts reason/message/status and flags a daily-quota body', () => {
+    const info = parseGbError(JSON.stringify(QUOTA_BODY));
+    expect(info.reason).toBe('dailyLimitExceeded');
+    expect(info.gbStatus).toBe('RESOURCE_EXHAUSTED');
+    expect(isDailyQuotaExhausted(info)).toBe(true);
+  });
+  it('does NOT flag a transient per-second rate-limit burst as daily exhaustion', () => {
+    expect(isDailyQuotaExhausted({ reason: 'rateLimitExceeded' })).toBe(false);
+    expect(isDailyQuotaExhausted({ reason: 'userRateLimitExceeded' })).toBe(false);
+  });
+  it('flags a legacy 403 dailyLimitExceeded and a bare RESOURCE_EXHAUSTED', () => {
+    expect(isDailyQuotaExhausted({ reason: 'quotaExceeded' })).toBe(true);
+    expect(isDailyQuotaExhausted({ gbStatus: 'RESOURCE_EXHAUSTED' })).toBe(true);
+    expect(isDailyQuotaExhausted({ message: 'Queries per day limit reached' })).toBe(true);
+  });
+});
+
+describe('GoogleBooksResolver non-200 honesty', () => {
+  it('logs the HTTP status + Google reason and throws quota_exhausted on a daily-quota 429 (never a null no-match)', async () => {
+    const { fetchImpl, calls } = statusFetch(429, QUOTA_BODY);
+    const { log, entries } = captureLogger();
+    const secretKey = 'SECRET-GB-KEY-abc123';
+    const r = new GoogleBooksResolver({
+      apiKey: secretKey,
+      fetchImpl,
+      log,
+      sleepImpl: async () => {},
+    });
+    const err = await r
+      .resolveVolume({ isbn: '9780316129084', title: 'Leviathan Wakes' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GoogleBooksUpstreamError);
+    expect((err as GoogleBooksUpstreamError).kind).toBe('quota_exhausted');
+    expect((err as GoogleBooksUpstreamError).status).toBe(429);
+    // The quota short-circuits immediately (no retry burned into a dead quota): exactly one request.
+    expect(calls()).toBe(1);
+    // Every non-200 is logged WITH the status, and the exhaustion gets its own clear error line.
+    const nonOk = entries.find((e) => (e.obj as { status?: number }).status === 429);
+    expect(nonOk).toBeDefined();
+    expect(entries.some((e) => e.level === 'error' && /DAILY QUOTA/.test(e.msg))).toBe(true);
+    // The API key is NEVER logged (not in the object, not in the query, not in a URL).
+    expect(JSON.stringify(entries)).not.toContain(secretKey);
+  });
+
+  it('classifies a persistent 503 as a retryable upstream error — retried, then surfaced (not a no-match)', async () => {
+    const { fetchImpl, calls } = statusFetch(503, { error: { message: 'backend error' } });
+    const { log } = captureLogger();
+    const r = new GoogleBooksResolver({
+      apiKey: 'k',
+      fetchImpl,
+      log,
+      retries: 1,
+      sleepImpl: async () => {},
+    });
+    const err = await r
+      .resolveVolume({ isbn: '9780316129084', title: 'Leviathan Wakes' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GoogleBooksUpstreamError);
+    expect((err as GoogleBooksUpstreamError).kind).toBe('upstream_error');
+    expect((err as GoogleBooksUpstreamError).status).toBe(503);
+    // one initial attempt + one retry before giving up.
+    expect(calls()).toBe(2);
+  });
+
+  it('returns null for a legitimate 200 totalItems:0 — an honest no-match, distinct from an error', async () => {
+    const { fetchImpl } = fakeFetch({}); // every query answers { items: [] }, status 200
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    expect(
+      await r.resolveVolume({ isbn: '9780316129084', title: 'No Such Book', author: 'Nobody' }),
+    ).toBeNull();
+  });
+
+  it('latches the daily quota and short-circuits the REMAINING calls this pass with no further HTTP', async () => {
+    const { fetchImpl, calls } = statusFetch(429, QUOTA_BODY);
+    const { log, entries } = captureLogger();
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl, log, sleepImpl: async () => {} });
+    // First call hits the quota (one request) and latches the breaker.
+    await expect(r.resolveVolume({ isbn: '9780316129084', title: 'A' })).rejects.toBeInstanceOf(
+      GoogleBooksUpstreamError,
+    );
+    expect(calls()).toBe(1);
+    // Subsequent calls this pass short-circuit BEFORE any HTTP — no attempts burned into the dead quota.
+    for (const title of ['B', 'C', 'D']) {
+      const err = await r.resolveVolume({ isbn: '9780000000000', title }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(GoogleBooksUpstreamError);
+      expect((err as GoogleBooksUpstreamError).kind).toBe('quota_exhausted');
+    }
+    expect(calls()).toBe(1); // still one — nothing else went to the network
+    // And the clear exhaustion line is logged ONCE per window, not once per short-circuited call.
+    expect(entries.filter((e) => e.level === 'error' && /DAILY QUOTA/.test(e.msg))).toHaveLength(1);
+  });
+
+  it('self-heals: the latch expires after the cooldown so the next pass re-probes', async () => {
+    let call = 0;
+    const fetchImpl = (async (): Promise<Response> => {
+      call += 1;
+      if (call === 1) return new Response(JSON.stringify(QUOTA_BODY), { status: 429 });
+      return new Response(
+        JSON.stringify({
+          items: [vol('VOL_HEAL', 'Leviathan Wakes', ['James S. A. Corey'], '9780316129084')],
+        }),
+        { status: 200 },
+      );
+    }) as unknown as typeof fetch;
+    let now = 1_000_000;
+    const r = new GoogleBooksResolver({
+      apiKey: 'k',
+      fetchImpl,
+      sleepImpl: async () => {},
+      nowImpl: () => now,
+      quotaCooldownMs: 1000,
+    });
+    // Pass 1: quota exhausted, latched.
+    await expect(
+      r.resolveVolume({ isbn: '9780316129084', title: 'Leviathan Wakes' }),
+    ).rejects.toBeInstanceOf(GoogleBooksUpstreamError);
+    // Still within the cooldown → short-circuit, no HTTP.
+    await expect(
+      r.resolveVolume({ isbn: '9780316129084', title: 'Leviathan Wakes' }),
+    ).rejects.toBeInstanceOf(GoogleBooksUpstreamError);
+    expect(call).toBe(1);
+    // Advance past the cooldown (the daily reset happened) → the next pass re-probes and resolves.
+    now += 2000;
+    const out = await r.resolveVolume({ isbn: '9780316129084', title: 'Leviathan Wakes' });
+    expect(out).toEqual({ volumeId: 'VOL_HEAL', isbn13: '9780316129084', via: 'isbn' });
+    expect(call).toBe(2);
   });
 });

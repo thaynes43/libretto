@@ -1,6 +1,6 @@
 import type { AppConfig } from '../config.js';
 import type { Logger } from '../logger.js';
-import { GoogleBooksResolver } from './google-books.js';
+import { GoogleBooksResolver, GoogleBooksUpstreamError } from './google-books.js';
 
 /**
  * The resolve broker (M3 direction-a, PLAN-059): Libretto's reliable ISBN-first resolution of a wanted
@@ -26,8 +26,26 @@ export interface ResolveResult {
   via: 'isbn' | 'title';
 }
 
+/**
+ * Why the broker returned what it did — the additive HONESTY signal (the 2026-07-20 fix):
+ *   - `resolved`         — a volume was found (`resolved` is non-null).
+ *   - `no_match`         — Google Books honestly has no such volume (`200 totalItems:0` / guard reject).
+ *   - `quota_exhausted`  — the daily Google Books quota is spent; this was NOT attempted honestly.
+ *   - `upstream_error`   — a 5xx / non-quota non-200 / network failure past the retries.
+ * `resolved` stays null for every non-`resolved` reason, so existing consumers (haynesnetwork's wants
+ * pass reads `resolved:null` and self-heals hourly) are unaffected; the reason is purely additive.
+ */
+export type ResolveReason = 'resolved' | 'no_match' | 'quota_exhausted' | 'upstream_error';
+
+export interface ResolveOutcome {
+  /** The resolved volume, or null for EVERY failure reason (no_match / quota_exhausted / upstream_error). */
+  resolved: ResolveResult | null;
+  /** The honesty reason (additive; does not change the null-on-failure contract). */
+  reason: ResolveReason;
+}
+
 export interface ResolveBroker {
-  resolve(input: ResolveInput): Promise<ResolveResult | null>;
+  resolve(input: ResolveInput): Promise<ResolveOutcome>;
 }
 
 /** Pull the first ISBN-13 out of an identifiers list ("isbn:9780316129084" -> "9780316129084"). */
@@ -42,7 +60,7 @@ class GoogleBooksBroker implements ResolveBroker {
     private readonly log: Logger,
   ) {}
 
-  async resolve(input: ResolveInput): Promise<ResolveResult | null> {
+  async resolve(input: ResolveInput): Promise<ResolveOutcome> {
     const isbn = input.isbn ?? isbnFromIdentifiers(input.identifiers);
     const author = input.authors && input.authors.length > 0 ? input.authors.join(' ') : null;
     try {
@@ -52,17 +70,32 @@ class GoogleBooksBroker implements ResolveBroker {
           { title: input.title, volumeId: vol.volumeId, via: vol.via },
           'resolve broker: resolved to a Google-Books volume id',
         );
+        return { resolved: vol, reason: 'resolved' };
       }
-      return vol;
+      // A genuine Google Books no-match (200 totalItems:0 / a guard reject) — honestly nothing to add.
+      return { resolved: null, reason: 'no_match' };
     } catch (error) {
-      // The broker is best-effort: a GB failure is an honest null (the caller falls back), never a throw.
+      // The broker is best-effort: a GB failure is an honest null (the caller falls back), never a throw —
+      // but the reason distinguishes a dead quota / upstream error from a real no-match (the honesty fix).
+      if (error instanceof GoogleBooksUpstreamError && error.kind === 'quota_exhausted') {
+        this.log.debug(
+          { title: input.title, status: error.status },
+          'resolve broker: skipped — Google Books daily quota exhausted this pass (not a no-match)',
+        );
+        return { resolved: null, reason: 'quota_exhausted' };
+      }
       this.log.warn(
         { title: input.title, err: error },
-        'resolve broker: Google Books lookup failed',
+        'resolve broker: Google Books lookup failed (upstream error, not a no-match)',
       );
-      return null;
+      return { resolved: null, reason: 'upstream_error' };
     }
   }
+}
+
+/** Build a broker over an explicit resolver (test seam; production wires it via createResolveBroker). */
+export function brokerFromResolver(resolver: GoogleBooksResolver, log: Logger): ResolveBroker {
+  return new GoogleBooksBroker(resolver, log);
 }
 
 /**
@@ -74,6 +107,7 @@ export function createResolveBroker(config: AppConfig, log: Logger): ResolveBrok
   const resolver = new GoogleBooksResolver({
     baseUrl: config.googleBooksUrl,
     apiKey: config.googleBooksApiKey,
+    log,
   });
   if (!resolver.enabled) return undefined;
   log.info('resolve broker: Google Books configured; ISBN-first resolution armed for acquisition');

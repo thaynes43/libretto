@@ -303,8 +303,10 @@ export function createApp(deps: AppDeps): Hono {
 
   // --- Resolve broker (M3 direction-a): resolve an ISBN|title+author to a Google-Books volume id
   // (the LazyLibrarian addBook key), ISBN-first with a guarded title fallback. Mutates NOTHING — a
-  // reusable resolution service. 200 { resolved: null } is an honest no-match (not an error); 503 when
-  // the broker is not configured (GOOGLE_BOOKS_API_KEY unset).
+  // reusable resolution service. 200 { resolved: null } stays the answer for a miss AND for a dead
+  // quota / upstream error; the additive `reason` (no_match | quota_exhausted | upstream_error |
+  // resolved) tells them apart without breaking a consumer that only reads `resolved`. 503 when the
+  // broker is not configured (GOOGLE_BOOKS_API_KEY unset).
   api.post('/resolve', async (c) => {
     if (!resolve) {
       return c.json({ error: 'resolve broker not configured (set GOOGLE_BOOKS_API_KEY)' }, 503);
@@ -323,13 +325,13 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: 'body must carry at least one of { isbn, title, identifiers }' }, 400);
     }
     const { isbn, title, author, identifiers } = parsed.data;
-    const resolved = await resolve.resolve({
+    const { resolved, reason } = await resolve.resolve({
       ...(isbn === undefined ? {} : { isbn }),
       ...(identifiers === undefined ? {} : { identifiers }),
       ...(author === undefined ? {} : { authors: [author] }),
       title: title ?? '',
     });
-    return c.json({ resolved });
+    return c.json({ resolved, reason });
   });
 
   // --- Search: typeahead for a builder's ref (M4 builder page). Find the series/list by
