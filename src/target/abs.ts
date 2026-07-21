@@ -161,12 +161,21 @@ export class AbsTarget implements TargetClient {
     if (toAdd.length > 0) {
       latest = await this.send<AbsCollection>('POST', `${path}/batch/add`, { books: toAdd });
     }
+    // Marker re-sync (ADR-076 C-02): re-write the description too when the recipe's category
+    // token changed. PATCH carries both the (re)order and the description in one call.
+    const descriptionChanged =
+      patch.description !== undefined && patch.description !== (latest.description ?? '');
     const orderNow = latest.books.map((book) => book.id);
-    if (!sameOrder(orderNow, patch.itemIds)) {
-      latest = await this.send<AbsCollection>('PATCH', path, { books: patch.itemIds });
+    if (!sameOrder(orderNow, patch.itemIds) || descriptionChanged) {
+      latest = await this.send<AbsCollection>('PATCH', path, {
+        books: patch.itemIds,
+        ...(patch.description !== undefined && descriptionChanged
+          ? { description: patch.description }
+          : {}),
+      });
     }
     this.log.debug(
-      { collectionId, added: toAdd.length, removed: toRemove.length },
+      { collectionId, added: toAdd.length, removed: toRemove.length, descriptionChanged },
       'abs: updated collection membership',
     );
     return this.toTargetCollection(latest);

@@ -1,45 +1,63 @@
 import { acquireMissing, type AcquireContext } from '../acquire/acquire.js';
 import type { LlFormat } from '../acquire/lazylibrarian.js';
-import { resolveBuilder, type BuilderContext } from '../builders/index.js';
-import { isSeriesGrain, type Recipe } from '../recipes/schema.js';
+import { resolveBuilder, type BuilderContext, type WorkItem } from '../builders/index.js';
+import { isSeriesGrain, type Recipe, type Target } from '../recipes/schema.js';
 import type { RecipeRunResult } from '../runs/store.js';
-import { buildCollectionDescription, recipeIdFromDescription } from '../target/marker.js';
-import type { TargetClient } from '../target/types.js';
+import {
+  buildCollectionDescription,
+  provenanceMarker,
+  recipeIdFromDescription,
+  withUpdatedMarker,
+} from '../target/marker.js';
+import type { TargetRegistry } from '../target/registry.js';
+import { TargetUnavailableError, type TargetClient } from '../target/types.js';
 import type { Logger } from '../logger.js';
 import { matchWorks } from './match.js';
 
 /**
- * Reconcile one recipe against its target (DESIGN-037 D-04/D-07/D-08, amended
- * stateless):
+ * Reconcile a recipe against its targets (DESIGN-037 D-04/D-07/D-08 + ADR-076 multi-target):
  *
- *   builder -> ordered work list -> match against library items by identifier ->
- *   recover the owned collection via the provenance marker -> diff -> write per
- *   syncMode -> report counts + missing[].
+ *   builder -> ONE ordered work list -> for EACH target: match against its library by identifier
+ *   (then the D-04 title fallback) -> recover the owned collection via the provenance marker ->
+ *   diff -> write per syncMode -> report per-(recipe, target) counts + missing[].
  *
- * Ownership rules made structural:
- *   - the owned collection is the one whose description carries this recipe's
- *     marker — renames do not break ownership;
- *   - a collection without the marker is NEVER touched, same name or not;
- *   - append never removes; sync reconciles full membership and (when ordered)
- *     positions;
+ * MULTI-TARGET (ADR-076): the SAME builder output is applied to every target the recipe declares,
+ * each carrying the SAME marker `[libretto:<recipeId>|cat=<Category>]` (the shared merge key). The
+ * per-target kind mapping is unchanged (Kavita ordered => reading list / unordered => collection;
+ * ABS => collection). One recipe therefore yields ONE RecipeRunResult per target, each tagging its
+ * target and its own missing[] (the works missing FROM that target).
+ *
+ * Ownership rules made structural (per target):
+ *   - the owned collection is the one whose description carries this recipe's marker — renames do
+ *     not break ownership; a collection without the marker is NEVER touched, same name or not;
+ *   - append never removes; sync reconciles full membership and (when ordered) positions;
  *   - unmatched work goes to missing[] — nothing is fabricated.
  */
-export async function reconcileRecipe(
+
+/** Which LazyLibrarian format a target acquires: Kavita -> eBooks, ABS -> AudioBooks (ADR-076 C-05). */
+function formatFor(server: Target['server']): LlFormat {
+  return server === 'abs' ? 'audiobook' : 'ebook';
+}
+
+/**
+ * Reconcile ONE recipe against ONE resolved target client (the multi-target primitive). `works`
+ * is the recipe's builder output, resolved once by the caller and shared across targets.
+ */
+export async function reconcileTarget(
   recipe: Recipe,
+  targetLib: Target,
   target: TargetClient,
+  works: WorkItem[],
   log: Logger,
-  builderCtx: BuilderContext = {},
   acquire?: AcquireContext,
 ): Promise<RecipeRunResult> {
-  const { libraryId } = recipe.targetLibrary;
-  const works = await resolveBuilder(recipe.builder, builderCtx);
+  const { libraryId, server } = targetLib;
   const items = await target.listItems(libraryId);
 
   // Match grain (comics support): series-grain recipes (hardcover_comics) pair a whole Hardcover
   // series to one target series by conservative NAME equality; work-grain recipes pair each book by
-  // identifier then the D-04 title fallback (default on, per-recipe opt-out via titleFallback). Both
-  // go through the single shared matcher (core/match.ts) that the missing endpoint also uses, so a
-  // member counted `missing` here is exactly one the endpoint reports.
+  // identifier then the D-04 title fallback. Both go through the single shared matcher (core/match.ts)
+  // the missing endpoint also uses, so a member counted `missing` here is exactly one it reports.
   const grain = isSeriesGrain(recipe.builder) ? 'series' : 'work';
   const { matchedIds, matchedSeen, matchedByTitle, missingWorks } = matchWorks(works, items, {
     titleFallback: recipe.variables.titleFallback,
@@ -48,10 +66,10 @@ export async function reconcileRecipe(
   const missing = missingWorks.map((work) => work.label);
   if (matchedByTitle > 0) {
     log.info(
-      { recipeId: recipe.id, matchedByTitle },
+      { recipeId: recipe.id, server, matchedByTitle },
       grain === 'series'
         ? 'matched by conservative series-name equality'
-        : 'matched by conservative title fallback (no identifier hit)',
+        : 'matched by conservative title/author fallback (no identifier hit)',
     );
   }
 
@@ -61,7 +79,7 @@ export async function reconcileRecipe(
   );
   if (owned.length > 1) {
     log.warn(
-      { recipeId: recipe.id, collectionIds: owned.map((c) => c.id) },
+      { recipeId: recipe.id, server, collectionIds: owned.map((c) => c.id) },
       'multiple collections carry this recipe marker; reconciling the first only',
     );
   }
@@ -72,10 +90,9 @@ export async function reconcileRecipe(
   let removed: number;
 
   if (matchedIds.length === 0) {
-    // Zero-match honesty (D-08): never create an empty collection and never let a
-    // zero-match sync wipe an existing one. The run is flagged warn; membership is
-    // left exactly as it was.
-    log.warn({ recipeId: recipe.id }, 'zero matches; leaving the collection alone');
+    // Zero-match honesty (D-08): never create an empty collection and never let a zero-match sync
+    // wipe an existing one. The run is flagged warn; membership is left exactly as it was.
+    log.warn({ recipeId: recipe.id, server }, 'zero matches; leaving the collection alone');
     written = collection?.itemIds.length ?? 0;
     added = 0;
     removed = 0;
@@ -83,12 +100,13 @@ export async function reconcileRecipe(
     const created = await target.createCollection({
       libraryId,
       name: recipe.name,
-      description: buildCollectionDescription(recipe.id),
+      // Marker carries the shared recipe id + the recipe-authored category (ADR-076 C-02).
+      description: buildCollectionDescription(recipe.id, recipe.category),
       ...(recipe.variables.tag === undefined ? {} : { tags: [recipe.variables.tag] }),
       itemIds: matchedIds,
       ordered: recipe.variables.ordered,
     });
-    log.info({ recipeId: recipe.id, collectionId: created.id }, 'created collection');
+    log.info({ recipeId: recipe.id, server, collectionId: created.id }, 'created collection');
     written = created.itemIds.length;
     added = created.itemIds.length;
     removed = 0;
@@ -101,9 +119,9 @@ export async function reconcileRecipe(
       desired = [...current, ...matchedIds.filter((id) => !currentSet.has(id))];
       removed = 0;
     } else {
-      // Sync: full membership reconcile. Ordered recipes also enforce source
-      // positions; unordered ones keep the target's relative order for retained
-      // items and append new ones (order written once, not maintained — D-07).
+      // Sync: full membership reconcile. Ordered recipes also enforce source positions; unordered
+      // ones keep the target's relative order for retained items and append new ones (order written
+      // once, not maintained — D-07).
       if (recipe.variables.ordered) {
         desired = matchedIds;
       } else {
@@ -114,29 +132,38 @@ export async function reconcileRecipe(
       removed = current.filter((id) => !matchedSeen.has(id)).length;
     }
     added = desired.filter((id) => !currentSet.has(id)).length;
-    if (!sameOrder(desired, current)) {
-      await target.updateCollection(collection.id, { itemIds: desired });
+    // Marker re-sync (ADR-076 C-02): if the recipe's category was set/changed on an
+    // already-produced collection, re-write the marker token too (preserving surrounding prose).
+    // A category-free, unchanged recipe never touches the description (historical behavior).
+    const markerChanged = !collection.description.includes(
+      provenanceMarker(recipe.id, recipe.category),
+    );
+    const membershipChanged = !sameOrder(desired, current);
+    if (membershipChanged || markerChanged) {
+      await target.updateCollection(collection.id, {
+        itemIds: desired,
+        ...(markerChanged
+          ? { description: withUpdatedMarker(collection.description, recipe.id, recipe.category) }
+          : {}),
+      });
       log.info(
-        { recipeId: recipe.id, collectionId: collection.id, added, removed },
-        'updated collection membership',
+        { recipeId: recipe.id, server, collectionId: collection.id, added, removed, markerChanged },
+        'updated collection',
       );
     }
     written = desired.length;
   }
 
-  // M3 acquisition leg: wire missing[] into LazyLibrarian so the recipe ACQUIRES. Gated on the
-  // recipe's variables.acquisitionEnabled (default false — the coordinator does the controlled
-  // rollout) AND LazyLibrarian being configured. Kavita recipes acquire eBooks; ABS recipes
-  // AudioBooks. Best-effort and stateless: it never fails the reconcile, and re-runs are idempotent
-  // (LazyLibrarian is the ledger). See acquire/acquire.ts for the mechanism.
+  // Per-target acquisition leg (ADR-076 C-05): the missing[] FROM THIS target feeds LazyLibrarian
+  // in this target's format (kavita -> eBook, abs -> AudioBook). Gated on variables.acquisitionEnabled
+  // AND LazyLibrarian being configured. Confinement + pacing are UNCHANGED — see acquire/acquire.ts.
   let acquisition: RecipeRunResult['acquisition'];
   if (recipe.variables.acquisitionEnabled) {
     if (acquire) {
-      const format: LlFormat = recipe.targetLibrary.server === 'abs' ? 'audiobook' : 'ebook';
-      acquisition = await acquireMissing(recipe.id, missingWorks, format, acquire, log);
+      acquisition = await acquireMissing(recipe.id, missingWorks, formatFor(server), acquire, log);
     } else {
       log.warn(
-        { recipeId: recipe.id },
+        { recipeId: recipe.id, server },
         'acquisitionEnabled but LazyLibrarian is not configured (set LAZYLIBRARIAN_URL and LAZYLIBRARIAN_API_KEY); acquisition skipped',
       );
     }
@@ -144,6 +171,7 @@ export async function reconcileRecipe(
 
   return {
     recipeId: recipe.id,
+    target: { server, libraryId },
     counts: {
       matched: matchedIds.length,
       matchedByTitle,
@@ -154,6 +182,76 @@ export async function reconcileRecipe(
     },
     missing,
     ...(acquisition ? { acquisition } : {}),
+  };
+}
+
+/**
+ * Reconcile a recipe against ALL its targets via the registry (the queue's entry point, ADR-076).
+ * Resolves the builder ONCE and applies it to each target, tolerating a per-target failure (a target
+ * being unavailable never blanks the others). Returns one RecipeRunResult per target.
+ */
+export async function reconcileRecipeTargets(
+  recipe: Recipe,
+  targets: TargetRegistry,
+  log: Logger,
+  builderCtx: BuilderContext = {},
+  acquire?: AcquireContext,
+): Promise<RecipeRunResult[]> {
+  let works: WorkItem[];
+  try {
+    works = await resolveBuilder(recipe.builder, builderCtx);
+  } catch (error) {
+    // A builder-wide failure (e.g. HARDCOVER_TOKEN unset, ref did not resolve) fails EVERY target;
+    // report one error row per target so the run still carries the per-target shape.
+    const message = error instanceof Error ? error.message : String(error);
+    log.error({ recipeId: recipe.id, err: error }, 'builder resolution failed');
+    return recipe.targets.map((targetLib) => errorResult(recipe.id, targetLib, message));
+  }
+
+  const results: RecipeRunResult[] = [];
+  for (const targetLib of recipe.targets) {
+    try {
+      const target = targets.for(targetLib.server);
+      results.push(await reconcileTarget(recipe, targetLib, target, works, log, acquire));
+    } catch (error) {
+      const message =
+        error instanceof TargetUnavailableError || error instanceof Error
+          ? error.message
+          : String(error);
+      log.error(
+        { recipeId: recipe.id, server: targetLib.server, err: error },
+        'recipe reconcile failed for target',
+      );
+      results.push(errorResult(recipe.id, targetLib, message));
+    }
+  }
+  return results;
+}
+
+/**
+ * Reconcile a recipe against ONE resolved target client (single-target convenience): resolves the
+ * builder and reconciles the recipe's FIRST target against `target`. Kept for single-target callers
+ * and focused tests; the queue drives all targets through reconcileRecipeTargets.
+ */
+export async function reconcileRecipe(
+  recipe: Recipe,
+  target: TargetClient,
+  log: Logger,
+  builderCtx: BuilderContext = {},
+  acquire?: AcquireContext,
+): Promise<RecipeRunResult> {
+  const works = await resolveBuilder(recipe.builder, builderCtx);
+  const targetLib = recipe.targets[0]!; // the schema guarantees at least one target
+  return reconcileTarget(recipe, targetLib, target, works, log, acquire);
+}
+
+function errorResult(recipeId: string, targetLib: Target, message: string): RecipeRunResult {
+  return {
+    recipeId,
+    target: { server: targetLib.server, libraryId: targetLib.libraryId },
+    counts: { matched: 0, matchedByTitle: 0, written: 0, added: 0, removed: 0, missing: 0 },
+    missing: [],
+    error: message,
   };
 }
 

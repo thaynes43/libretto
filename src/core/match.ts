@@ -17,11 +17,19 @@ export interface MatchResult {
    * Subset of matches resolved by conservative NAME equality rather than an identifier: the D-04
    * title fallback (work grain) OR the series-name match (series grain). Both use the same
    * noise-stripped, ambiguity-refusing index, so both are "flagged" here to stay distinguishable
-   * from an identifier match. `matchedVia` carries the finer 'title' vs 'series' provenance.
+   * from an identifier match. `matchedVia` carries the finer 'title'/'title_author'/'series'
+   * provenance.
    */
   matchedByTitle: number;
-  /** Per-work match provenance, in work order (undefined = unmatched). */
-  matchedVia: (('identifier' | 'title' | 'series') | undefined)[];
+  /**
+   * Per-work match provenance, in work order (undefined = unmatched):
+   *   - 'identifier'   — an exact identifier hit (the ceiling);
+   *   - 'title'        — the conservative title fallback, no author on the work to guard with;
+   *   - 'title_author' — the title fallback WITH an author guard actively in play (the honest
+   *     flag for `{ title, author }` static entries — ADR-076 C-07);
+   *   - 'series'       — series-grain name equality (comics).
+   */
+  matchedVia: (('identifier' | 'title' | 'title_author' | 'series') | undefined)[];
   /** The full unmatched works (identities, not just labels) — feeds acquisition + the missing endpoint. */
   missingWorks: WorkItem[];
 }
@@ -71,11 +79,11 @@ export function matchWorks(
   const matchedIds: string[] = [];
   const matchedSeen = new Set<string>();
   const missingWorks: WorkItem[] = [];
-  const matchedVia: (('identifier' | 'title' | 'series') | undefined)[] = [];
+  const matchedVia: (('identifier' | 'title' | 'title_author' | 'series') | undefined)[] = [];
   let matchedByTitle = 0;
 
   for (const work of works) {
-    let via: 'identifier' | 'title' | 'series' | undefined;
+    let via: 'identifier' | 'title' | 'title_author' | 'series' | undefined;
     let item: TargetItem | undefined;
     if (seriesGrain) {
       const candidate = nameIndex!.match(work.title, work.authors, matchedSeen);
@@ -93,7 +101,9 @@ export function matchWorks(
         const candidate = nameIndex.match(work.title, work.authors, matchedSeen);
         if (candidate) {
           item = items.find((one) => one.id === candidate.id);
-          via = 'title';
+          // Flag an author-guarded title match distinctly (ADR-076 C-07): a work that carries its
+          // own author (e.g. a { title, author } static entry) matched via title_author.
+          via = work.authors && work.authors.length > 0 ? 'title_author' : 'title';
         }
       }
     }
@@ -105,7 +115,7 @@ export function matchWorks(
       matchedSeen.add(item.id);
       matchedIds.push(item.id);
       matchedVia.push(via);
-      if (via === 'title' || via === 'series') matchedByTitle += 1;
+      if (via === 'title' || via === 'title_author' || via === 'series') matchedByTitle += 1;
     } else {
       // The item is already claimed by an earlier work — this work neither matches nor is missing.
       matchedVia.push(via);

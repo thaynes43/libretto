@@ -70,7 +70,7 @@ describe('RunQueue', () => {
     await recipeStore.save(
       makeRecipe({
         id: 'bad-library',
-        targetLibrary: { server: 'kavita', libraryId: 'nope' },
+        targets: [{ server: 'kavita', libraryId: 'nope' }],
       }),
     );
     const runId = await queue.enqueue('bad-library', 'api');

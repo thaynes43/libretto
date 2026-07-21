@@ -5,6 +5,7 @@ import { pino } from 'pino';
 import type { Recipe } from '../recipes/schema.js';
 import { FakeTarget } from '../target/fake.js';
 import type { TargetRegistry } from '../target/registry.js';
+import type { TargetClient } from '../target/types.js';
 
 export const silentLogger = pino({ level: 'silent' });
 
@@ -16,7 +17,7 @@ export async function makeTempDir(): Promise<{ dir: string; cleanup: () => Promi
 export function makeRecipe(overrides: Partial<Recipe> = {}): Recipe {
   return {
     id: 'test-recipe',
-    targetLibrary: { server: 'kavita', libraryId: 'lib-1' },
+    targets: [{ server: 'kavita', libraryId: 'lib-1' }],
     name: 'Test Recipe',
     builder: { type: 'static_ids', ref: ['isbn:1', 'isbn:2'] },
     variables: {
@@ -53,5 +54,29 @@ export function registryFor(target: FakeTarget): TargetRegistry {
       { server: 'kavita', configured: true, available: true, note: 'test fake' },
       { server: 'abs', configured: true, available: true, note: 'test fake' },
     ],
+  };
+}
+
+/**
+ * A registry that routes each server to a distinct client (multi-target tests): e.g. Kavita and ABS
+ * to two different FakeTargets or two real clients over stub servers. A server with no client fails
+ * honestly at use, exactly like the real registry.
+ */
+export function multiRegistry(
+  clients: Partial<Record<'kavita' | 'abs', TargetClient>>,
+): TargetRegistry {
+  return {
+    for: (server) => {
+      const client = clients[server];
+      if (!client) throw new Error(`${server} is not configured in this test registry`);
+      return client;
+    },
+    statuses: () =>
+      (['kavita', 'abs'] as const).map((server) => ({
+        server,
+        configured: clients[server] !== undefined,
+        available: clients[server] !== undefined,
+        note: 'test fake',
+      })),
   };
 }

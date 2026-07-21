@@ -18,7 +18,7 @@ const acquireCtx = (client: FakeLazyLibrarian): AcquireContext => ({
 
 const acquiringRecipe = (server: 'kavita' | 'abs' = 'kavita') =>
   makeRecipe({
-    targetLibrary: { server, libraryId: 'lib-1' },
+    targets: [{ server, libraryId: 'lib-1' }],
     builder: { type: 'hardcover_series', ref: 'stub' },
     variables: {
       syncMode: 'sync',

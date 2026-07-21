@@ -352,13 +352,14 @@ export class KavitaTarget implements TargetClient {
   ): Promise<TargetCollection> {
     const { kind, id } = parseContainerId(containerId);
     return kind === 'collection'
-      ? this.updateUnorderedCollection(id, patch.itemIds)
-      : this.updateReadingList(id, patch.itemIds);
+      ? this.updateUnorderedCollection(id, patch.itemIds, patch.description)
+      : this.updateReadingList(id, patch.itemIds, patch.description);
   }
 
   private async updateUnorderedCollection(
     id: number,
     itemIds: string[],
+    description?: string,
   ): Promise<TargetCollection> {
     const dto = (await this.get<KavitaCollection[]>('/api/Collection')).find(
       (collection) => collection.id === id,
@@ -384,18 +385,26 @@ export class KavitaTarget implements TargetClient {
         seriesIdsToRemove: toRemove.map(Number),
       });
     }
+    // Marker re-sync (ADR-076 C-02): re-write the summary when the recipe's category changed.
+    if (description !== undefined && description !== (dto.summary ?? '')) {
+      await this.post('/api/Collection/update', { ...dto, summary: description, promoted: true });
+    }
     return {
       id: collectionId(id),
       libraryId: '',
       name: dto.title,
-      description: dto.summary ?? '',
+      description: description ?? dto.summary ?? '',
       tags: [],
       itemIds: [...itemIds],
       kind: 'kavita_collection',
     };
   }
 
-  private async updateReadingList(id: number, itemIds: string[]): Promise<TargetCollection> {
+  private async updateReadingList(
+    id: number,
+    itemIds: string[],
+    description?: string,
+  ): Promise<TargetCollection> {
     const desired = new Set(itemIds);
 
     // Remove items of series that left the recipe.
@@ -450,11 +459,20 @@ export class KavitaTarget implements TargetClient {
       '/api/ReadingList/lists?PageNumber=1&PageSize=1000&includePromoted=true',
     );
     const dto = lists.find((list) => list.id === id);
+    // Marker re-sync (ADR-076 C-02): re-write the summary when the recipe's category changed.
+    if (description !== undefined && description !== (dto?.summary ?? '')) {
+      await this.post('/api/ReadingList/update', {
+        readingListId: id,
+        title: dto?.title ?? '',
+        summary: description,
+        promoted: true,
+      });
+    }
     return {
       id: readingListId(id),
       libraryId: '',
       name: dto?.title ?? '',
-      description: dto?.summary ?? '',
+      description: description ?? dto?.summary ?? '',
       tags: [],
       itemIds: seriesOrder(await this.readingListItems(id)),
       kind: 'kavita_reading_list',

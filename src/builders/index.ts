@@ -157,11 +157,27 @@ export async function resolveBuilder(
     case 'static_ids': {
       const seen = new Set<string>();
       const works: WorkItem[] = [];
-      for (const raw of builder.ref) {
-        const identifier = normalizeIdentifier(raw);
-        if (seen.has(identifier)) continue;
-        seen.add(identifier);
-        works.push({ identifiers: [identifier], label: identifier });
+      for (const entry of builder.ref) {
+        if (typeof entry === 'string') {
+          const identifier = normalizeIdentifier(entry);
+          const key = `id:${identifier}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          works.push({ identifiers: [identifier], label: identifier });
+        } else {
+          // A { title, author } entry (ADR-076 C-07): carries NO identifier, so it rides the
+          // conservative title+author fallback (matchedVia: title_author). This keeps hand-curated
+          // canon recipes self-contained — no external ID lookup at authoring time.
+          const key = `ta:${JSON.stringify([entry.title.toLowerCase(), entry.author.toLowerCase()])}`;
+          if (seen.has(key)) continue;
+          seen.add(key);
+          works.push({
+            identifiers: [],
+            label: `${entry.title} by ${entry.author}`,
+            title: entry.title,
+            authors: [entry.author],
+          });
+        }
       }
       return works;
     }

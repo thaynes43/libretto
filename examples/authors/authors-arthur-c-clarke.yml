@@ -1,0 +1,54 @@
+# Example: the "Authors" category — a famous author's signature canon as ONE
+# format-agnostic collection spanning Kavita (ebooks) and Audiobookshelf (audiobooks).
+#
+# These are GENERIC examples shipped for any estate. Before applying, set your own
+# library ids in `targets` below (from GET /api/targets) — the values here are
+# PLACEHOLDERS. Delete a target you don't run.
+#
+# The entries are { title, author } pairs on purpose: they carry no identifier, so
+# they ride the conservative title+author fallback (matchedVia: title_author) and the
+# recipe stays self-contained — no external ID lookup at authoring time. A work your
+# library lacks lands in missing[] and, with acquisitionEnabled, is offered to the
+# acquisition leg.
+id: authors-arthur-c-clarke
+targets:
+  - server: kavita
+    libraryId: REPLACE_WITH_YOUR_KAVITA_LIBRARY_ID
+  - server: abs
+    libraryId: REPLACE_WITH_YOUR_ABS_LIBRARY_ID
+name: 'Arthur C. Clarke'
+category: Authors
+builder:
+  type: static_ids
+  ref:
+    - title: '2001: A Space Odyssey'
+      author: 'Arthur C. Clarke'
+    - title: '2010: Odyssey Two'
+      author: 'Arthur C. Clarke'
+    - title: '2061: Odyssey Three'
+      author: 'Arthur C. Clarke'
+    - title: '3001: The Final Odyssey'
+      author: 'Arthur C. Clarke'
+    - title: 'Rendezvous with Rama'
+      author: 'Arthur C. Clarke'
+    - title: "Childhood's End"
+      author: 'Arthur C. Clarke'
+    - title: 'The City and the Stars'
+      author: 'Arthur C. Clarke'
+    - title: 'The Fountains of Paradise'
+      author: 'Arthur C. Clarke'
+    - title: 'A Fall of Moondust'
+      author: 'Arthur C. Clarke'
+    - title: 'The Songs of Distant Earth'
+      author: 'Arthur C. Clarke'
+variables:
+  syncMode: sync
+  # ordered: false -> a collection (author canon is a set, not a numbered reading order).
+  ordered: false
+  # Acquisition ON: a canon work your library lacks is handed to LazyLibrarian
+  # (eBooks for the Kavita target, AudioBooks for the ABS target), paced by the caps.
+  acquisitionEnabled: true
+  # Required for { title, author } entries: they match ONLY via the title+author fallback.
+  titleFallback: true
+  schedule: manual
+enabled: true

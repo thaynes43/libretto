@@ -1,0 +1,66 @@
+# Example: the "Authors" category — a famous author's signature canon as ONE
+# format-agnostic collection spanning Kavita (ebooks) and Audiobookshelf (audiobooks).
+#
+# These are GENERIC examples shipped for any estate. Before applying, set your own
+# library ids in `targets` below (from GET /api/targets) — the values here are
+# PLACEHOLDERS. Delete a target you don't run.
+#
+# The entries are { title, author } pairs on purpose: they carry no identifier, so
+# they ride the conservative title+author fallback (matchedVia: title_author) and the
+# recipe stays self-contained — no external ID lookup at authoring time. A work your
+# library lacks lands in missing[] and, with acquisitionEnabled, is offered to the
+# acquisition leg.
+id: authors-isaac-asimov
+targets:
+  - server: kavita
+    libraryId: REPLACE_WITH_YOUR_KAVITA_LIBRARY_ID
+  - server: abs
+    libraryId: REPLACE_WITH_YOUR_ABS_LIBRARY_ID
+name: 'Isaac Asimov'
+category: Authors
+builder:
+  type: static_ids
+  ref:
+    - title: 'I, Robot'
+      author: 'Isaac Asimov'
+    - title: 'The Caves of Steel'
+      author: 'Isaac Asimov'
+    - title: 'The Naked Sun'
+      author: 'Isaac Asimov'
+    - title: 'The Robots of Dawn'
+      author: 'Isaac Asimov'
+    - title: 'Robots and Empire'
+      author: 'Isaac Asimov'
+    - title: 'Foundation'
+      author: 'Isaac Asimov'
+    - title: 'Foundation and Empire'
+      author: 'Isaac Asimov'
+    - title: 'Second Foundation'
+      author: 'Isaac Asimov'
+    - title: "Foundation's Edge"
+      author: 'Isaac Asimov'
+    - title: 'Foundation and Earth'
+      author: 'Isaac Asimov'
+    - title: 'Prelude to Foundation'
+      author: 'Isaac Asimov'
+    - title: 'Forward the Foundation'
+      author: 'Isaac Asimov'
+    - title: 'The Gods Themselves'
+      author: 'Isaac Asimov'
+    - title: 'The End of Eternity'
+      author: 'Isaac Asimov'
+    - title: 'Nightfall'
+      author: 'Isaac Asimov'
+    - title: 'Pebble in the Sky'
+      author: 'Isaac Asimov'
+variables:
+  syncMode: sync
+  # ordered: false -> a collection (author canon is a set, not a numbered reading order).
+  ordered: false
+  # Acquisition ON: a canon work your library lacks is handed to LazyLibrarian
+  # (eBooks for the Kavita target, AudioBooks for the ABS target), paced by the caps.
+  acquisitionEnabled: true
+  # Required for { title, author } entries: they match ONLY via the title+author fallback.
+  titleFallback: true
+  schedule: manual
+enabled: true

@@ -23,7 +23,7 @@ describe('recipeSchema', () => {
 
   it.each([
     ['bad id', { id: 'Not A Valid Id!' }],
-    ['unknown server', { targetLibrary: { server: 'plex', libraryId: 'lib-1' } }],
+    ['unknown server', { targets: [{ server: 'plex', libraryId: 'lib-1' }] }],
     ['empty name', { name: '' }],
     ['unknown builder type', { builder: { type: 'goodreads_shelf', ref: 'series-1' } }],
     ['empty hardcover series ref', { builder: { type: 'hardcover_series', ref: '' } }],
@@ -93,6 +93,116 @@ describe('recipeSchema', () => {
 
   it('rejects unknown keys (strict contract)', () => {
     const parsed = recipeSchema.safeParse({ ...makeRecipe(), surprise: true });
+    expect(parsed.success).toBe(false);
+  });
+});
+
+describe('recipeSchema — multi-target (ADR-076)', () => {
+  const base = () => {
+    const { targets: _t, ...rest } = makeRecipe();
+    return rest;
+  };
+
+  it('accepts a two-target recipe (kavita + abs) and keeps targets[]', () => {
+    const parsed = recipeSchema.safeParse({
+      ...base(),
+      targets: [
+        { server: 'kavita', libraryId: '2' },
+        { server: 'abs', libraryId: 'abs-uuid' },
+      ],
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.targets).toEqual([
+        { server: 'kavita', libraryId: '2' },
+        { server: 'abs', libraryId: 'abs-uuid' },
+      ]);
+      expect('targetLibrary' in parsed.data).toBe(false);
+    }
+  });
+
+  it('normalizes a back-compat targetLibrary into a one-entry targets[]', () => {
+    const parsed = recipeSchema.safeParse({
+      ...base(),
+      targetLibrary: { server: 'kavita', libraryId: '2' },
+    });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) {
+      expect(parsed.data.targets).toEqual([{ server: 'kavita', libraryId: '2' }]);
+      expect('targetLibrary' in parsed.data).toBe(false);
+    }
+  });
+
+  it('rejects both targets and targetLibrary together', () => {
+    const parsed = recipeSchema.safeParse({
+      ...base(),
+      targets: [{ server: 'kavita', libraryId: '2' }],
+      targetLibrary: { server: 'abs', libraryId: 'x' },
+    });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects a recipe with neither targets nor targetLibrary', () => {
+    const parsed = recipeSchema.safeParse(base());
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects an empty targets array', () => {
+    const parsed = recipeSchema.safeParse({ ...base(), targets: [] });
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects duplicate servers (two kavita targets)', () => {
+    const parsed = recipeSchema.safeParse({
+      ...base(),
+      targets: [
+        { server: 'kavita', libraryId: '1' },
+        { server: 'kavita', libraryId: '2' },
+      ],
+    });
+    expect(parsed.success).toBe(false);
+    if (!parsed.success) {
+      expect(parsed.error.issues.some((i) => i.path.join('.') === 'targets')).toBe(true);
+    }
+  });
+});
+
+describe('recipeSchema — category (ADR-076 C-02)', () => {
+  it('accepts an optional category and keeps it', () => {
+    const parsed = recipeSchema.safeParse({ ...makeRecipe(), category: 'Authors' });
+    expect(parsed.success).toBe(true);
+    if (parsed.success) expect(parsed.data.category).toBe('Authors');
+  });
+
+  it('omits category when absent', () => {
+    const parsed = recipeSchema.parse(makeRecipe());
+    expect('category' in parsed).toBe(false);
+  });
+
+  it('rejects a category carrying a marker delimiter', () => {
+    for (const bad of ['has|pipe', 'has[bracket', 'has]bracket']) {
+      expect(recipeSchema.safeParse({ ...makeRecipe(), category: bad }).success).toBe(false);
+    }
+  });
+});
+
+describe('recipeSchema — static_ids { title, author } entries (ADR-076 C-07)', () => {
+  it('accepts a mix of identifier strings and { title, author } entries', () => {
+    const parsed = recipeSchema.safeParse({
+      ...makeRecipe(),
+      builder: {
+        type: 'static_ids',
+        ref: ['isbn:9780553293357', { title: 'Foundation', author: 'Isaac Asimov' }],
+      },
+    });
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects a { title } entry missing the author', () => {
+    const parsed = recipeSchema.safeParse({
+      ...makeRecipe(),
+      builder: { type: 'static_ids', ref: [{ title: 'Foundation' }] },
+    });
     expect(parsed.success).toBe(false);
   });
 });

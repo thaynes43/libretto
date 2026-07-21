@@ -32,6 +32,26 @@ describe('matchWorks', () => {
     expect(r.missingWorks.map((w) => w.label)).toEqual(['Nemesis Games']);
   });
 
+  it('flags an author-guarded title match as title_author (ADR-076 C-07)', () => {
+    // A { title, author } static entry carries no identifier and its own author -> title_author.
+    const works = [
+      work({
+        label: 'Project Hail Mary by Andy Weir',
+        title: 'Project Hail Mary',
+        authors: ['Andy Weir'],
+      }),
+      // A title-only work (no author) stays plain 'title'.
+      work({ label: 'Leviathan Wakes', title: 'Leviathan Wakes' }),
+    ];
+    const noIsbnItems: TargetItem[] = [
+      { id: 'i2', title: 'Project Hail Mary', identifiers: [], authors: ['Andy Weir'] },
+      { id: 'i1', title: 'Leviathan Wakes', identifiers: [] },
+    ];
+    const r = matchWorks(works, noIsbnItems, { titleFallback: true });
+    expect(r.matchedVia).toEqual(['title_author', 'title']);
+    expect(r.matchedByTitle).toBe(2);
+  });
+
   it('identifier-only when titleFallback is disabled', () => {
     const works = [
       work({
