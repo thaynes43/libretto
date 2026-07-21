@@ -225,10 +225,13 @@ describe('GoogleBooksResolver non-200 honesty', () => {
     const fetchImpl = (async (url: string | URL): Promise<Response> => {
       n += 1;
       const q = new URL(String(url)).searchParams.get('q') ?? '';
-      if (q === isbnQ) return new Response(JSON.stringify({ error: { message: 'blip' } }), { status: 503 });
+      if (q === isbnQ)
+        return new Response(JSON.stringify({ error: { message: 'blip' } }), { status: 503 });
       if (q === titleQ)
         return new Response(
-          JSON.stringify({ items: [vol('VOL_NG', 'Nemesis Games', ['James S. A. Corey'], '9780316334716')] }),
+          JSON.stringify({
+            items: [vol('VOL_NG', 'Nemesis Games', ['James S. A. Corey'], '9780316334716')],
+          }),
           { status: 200 },
         );
       return new Response(JSON.stringify({ items: [] }), { status: 200 });
@@ -246,7 +249,12 @@ describe('GoogleBooksResolver non-200 honesty', () => {
 
   it('surfaces upstream_error when BOTH the ISBN and title legs 503 (never a silent no-match)', async () => {
     const { fetchImpl, calls } = statusFetch(503, { error: { message: 'backend error' } });
-    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl, retries: 1, sleepImpl: async () => {} });
+    const r = new GoogleBooksResolver({
+      apiKey: 'k',
+      fetchImpl,
+      retries: 1,
+      sleepImpl: async () => {},
+    });
     const err = await r
       .resolveVolume({ isbn: '9780316129084', title: 'Leviathan Wakes' })
       .catch((e: unknown) => e);

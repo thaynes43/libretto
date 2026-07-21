@@ -408,7 +408,8 @@ export class GoogleBooksResolver {
           };
         }
       } catch (error) {
-        if (error instanceof GoogleBooksUpstreamError && error.kind === 'quota_exhausted') throw error;
+        if (error instanceof GoogleBooksUpstreamError && error.kind === 'quota_exhausted')
+          throw error;
         this.log.debug(
           { isbn: input.isbn, err: error instanceof Error ? error.message : String(error) },
           'google books: ISBN leg failed transiently; falling through to the guarded title fallback',
