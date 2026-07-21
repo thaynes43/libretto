@@ -1,6 +1,6 @@
 # Libretto
 
-[Kometa](https://kometa.wiki/) for your book stack. Libretto builds and maintains collections in [Kavita](https://www.kavitareader.com/) and [Audiobookshelf](https://www.audiobookshelf.org/) from recipes: declarative YAML files that say "this list of books belongs together, in this order, in that library". Items a recipe wants but your library lacks become an honest missing report, which — when a recipe opts in — Libretto feeds to [LazyLibrarian](https://lazylibrarian.gitlab.io/) to drive acquisition.
+[Kometa](https://kometa.wiki/) for your book stack. Libretto builds and maintains collections in [Kavita](https://www.kavitareader.com/) and [Audiobookshelf](https://www.audiobookshelf.org/) from recipes: declarative YAML files that say "this list of books belongs together, in this order, in these libraries". One recipe can target **both** servers at once, so the same collection spans your ebooks and audiobooks. Items a recipe wants but your library lacks become an honest missing report, which — when a recipe opts in — Libretto feeds to [LazyLibrarian](https://lazylibrarian.gitlab.io/) to drive acquisition.
 
 > **Status: pre-alpha (M3, acquisition).** Real Kavita and Audiobookshelf clients are live next to the M1 walking skeleton: the `hardcover_series` and `nyt_list` builders resolve, respectively, a [Hardcover](https://hardcover.app/) series and a [New York Times](https://developer.nytimes.com/docs/books-product/1/overview) bestseller list into an ordered, identifier-keyed work list, and the reconciler materializes it as a Kavita collection or reading list, or an Audiobookshelf collection. **M3 wires `missing[]` into LazyLibrarian** so a recipe can acquire what your library lacks (see [The acquisition leg](#the-acquisition-leg-m3)) — with `nyt_list` that means the estate can CHASE the current bestseller list. Remaining before beta: the Wikidata builder, and hardening. The architecture is written up in the [design document](https://github.com/thaynes43/haynesnetwork/blob/main/docs/designs/037-libretto-architecture.md).
 
@@ -9,6 +9,8 @@ Libretto is Kometa-like on purpose: YAML recipes in, collections out, logs and a
 ## The stateless philosophy
 
 Libretto keeps no database: recipes are YAML files you own, run history is a rotating JSON file, and ownership of the collections it produces is recovered from the targets themselves through a provenance marker embedded in each collection description. You can delete everything except your recipes folder and lose nothing that matters.
+
+The marker is `[libretto:<recipeId>]`, or `[libretto:<recipeId>|cat=<Category>]` when the recipe sets a [category](#categories). A [multi-target](#multiple-targets-one-collection-across-kavita-and-audiobookshelf) recipe writes the SAME marker into every server's collection — the shared recipe id is how a downstream reader (for example a wall that merges your ebook and audiobook shelves) knows the two are one collection.
 
 ### The marker spike, resolved
 
@@ -117,15 +119,18 @@ Drop a recipe in `./libretto-config/recipes/` (or PUT it through the API) and ap
 # liveness (no key needed)
 curl http://localhost:8080/health
 
-# discover library ids for targetLibrary.libraryId
+# discover library ids for targets[].libraryId
 curl -H 'Authorization: Bearer change-me' http://localhost:8080/api/targets
 
-# save a recipe: The Expanse, in series order, as a Kavita reading list
+# save a recipe: The Expanse, in series order, into BOTH Kavita and Audiobookshelf
 curl -X PUT http://localhost:8080/api/recipes/expanse \
   -H 'Authorization: Bearer change-me' \
   -H 'Content-Type: application/json' \
   -d '{
-    "targetLibrary": { "server": "kavita", "libraryId": "2" },
+    "targets": [
+      { "server": "kavita", "libraryId": "2" },
+      { "server": "abs", "libraryId": "<abs-library-uuid>" }
+    ],
     "name": "The Expanse",
     "builder": { "type": "hardcover_series", "ref": "the-expanse" },
     "variables": { "syncMode": "sync", "ordered": true, "schedule": "0 5 * * *" },
@@ -185,14 +190,17 @@ Environment variables (all connection settings are validated at use, not at boot
 
 ## Recipes
 
-A recipe is one YAML file. The commented examples in [`examples/recipes/`](examples/recipes/) include a fake-target starter, a real Hardcover series, a NYT bestseller list, and a comics collection. The shape:
+A recipe is one YAML file. The commented examples in [`examples/recipes/`](examples/recipes/) include a fake-target starter, a real Hardcover series, a NYT bestseller list, and a comics collection; [`examples/authors/`](examples/authors/) ships the [Authors program](#categories). The shape:
 
 ```yaml
 id: expanse
-targetLibrary:
-  server: kavita # kavita | abs
-  libraryId: '2' # from GET /api/targets
+targets: # 1..N, one library per server (at most one kavita and one abs)
+  - server: kavita # kavita | abs
+    libraryId: '2' # from GET /api/targets
+  - server: abs
+    libraryId: '<abs-library-uuid>'
 name: The Expanse
+category: Sci-Fi # optional; recorded in the marker as |cat=Sci-Fi
 builder:
   type: hardcover_series # static_ids | hardcover_series | nyt_list | hardcover_comics
   ref: the-expanse # Hardcover series slug or numeric id
@@ -219,16 +227,40 @@ Safety rules the reconciler enforces:
 - Deleting a recipe orphans its collection in the target; nothing is deleted remotely.
 - Unmatched works are reported in `missing[]`, never guessed at.
 
+### Multiple targets (one collection across Kavita and Audiobookshelf)
+
+A recipe declares `targets`: an array of 1..N `{ server, libraryId }` entries, at most one per server (one Kavita, one Audiobookshelf). Libretto resolves the builder **once** and materializes the SAME work list into EACH target, each carrying the SAME marker. So "The Expanse, in ebook and audiobook" is ONE recipe, not two — and because both collections share the recipe id, a downstream reader that merges your shelves sees them as a single collection.
+
+Everything is per-target from there: the ordered → container-kind mapping (above) is applied to each target on its own, `missing[]` is computed against each target's library (a book you hold in Kavita but not Audiobookshelf is missing only from Audiobookshelf), and — with `acquisitionEnabled` — each target acquires its own format (Kavita → eBooks, Audiobookshelf → AudioBooks). A run therefore records one result per target, and `GET /api/collections` returns one entry per (recipe, target). One target being unreachable never blanks the other.
+
+**Back-compat.** A single-target recipe may still be written with `targetLibrary: { server, libraryId }` instead of `targets`; Libretto normalizes it to a one-entry `targets[]` on save, so existing recipe files keep validating. Provide one or the other, never both. The stored/emitted shape is always `targets`.
+
+### Categories
+
+An optional `category` string tags the produced collection. It is recorded in the provenance marker — `[libretto:<recipeId>|cat=<Category>]` — so a reader can group collections without any Libretto-specific coupling (the token is plain marker text). Categories are free-form; keep them free of `[`, `]`, and `|` (the marker delimiters). Changing a recipe's category and re-applying re-writes just the marker token on the already-produced collections, preserving any human-edited description prose.
+
+The shipped **Authors program** ([`examples/authors/`](examples/authors/)) is 21 famous-author recipes that each use `category: Authors` and target both servers — a ready-made, format-agnostic "an author's whole canon" collection set. They use `{ title, author }` static entries (below), so they carry no external ids and work on any estate once you set your own `libraryId`s.
+
 ### Builders
 
 A builder turns `builder.ref` into the ordered work list the reconciler matches against your library. `GET /api/builders` reports which are available in your instance (an external-source builder needs its env set).
 
-| `type`             | `ref`                                    | Source and order                                                                                                                      |
-| ------------------ | ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
-| `static_ids`       | an array of identifier strings           | The ref itself, in order. No external source.                                                                                         |
-| `hardcover_series` | a Hardcover series slug or numeric id    | Every book in the series ordered by series position ([Hardcover](https://hardcover.app/); needs `HARDCOVER_TOKEN`).                   |
-| `nyt_list`         | a NYT `list_name_encoded` slug           | The current [NYT bestseller list](https://developer.nytimes.com/docs/books-product/1/overview) ordered by rank (needs `NYT_API_KEY`). |
-| `hardcover_comics` | an array of Hardcover series ids / slugs | One-or-more comic **series**, matched at series grain and grouped into a collection (needs `HARDCOVER_TOKEN`). See below.             |
+| `type`             | `ref`                                              | Source and order                                                                                                                      |
+| ------------------ | -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `static_ids`       | an array of identifiers and/or `{ title, author }` | The ref itself, in order. No external source. See the note below.                                                                     |
+| `hardcover_series` | a Hardcover series slug or numeric id              | Every book in the series ordered by series position ([Hardcover](https://hardcover.app/); needs `HARDCOVER_TOKEN`).                   |
+| `nyt_list`         | a NYT `list_name_encoded` slug                     | The current [NYT bestseller list](https://developer.nytimes.com/docs/books-product/1/overview) ordered by rank (needs `NYT_API_KEY`). |
+| `hardcover_comics` | an array of Hardcover series ids / slugs           | One-or-more comic **series**, matched at series grain and grouped into a collection (needs `HARDCOVER_TOKEN`). See below.             |
+
+**`static_ids`** entries are usually identifier strings (`isbn:…`, `asin:…`, or any opaque id your target exposes), matched exactly. An entry may instead be a **`{ title, author }`** object: it carries no identifier, so it rides the conservative title+author fallback only (flagged `matchedVia: title_author`, counted in `matchedByTitle`), and `titleFallback: true` (the default) is required for it to match. This keeps a hand-curated canon self-contained — no external ID lookup at authoring time — which is exactly what the [Authors program](#categories) uses:
+
+```yaml
+builder:
+  type: static_ids
+  ref:
+    - isbn:9780553293357 # an identifier entry, matched exactly
+    - { title: Foundation, author: Isaac Asimov } # a title+author entry, matched by the fallback
+```
 
 **`nyt_list`** takes the `list_name_encoded` value of any current NYT Books list as its `ref` — for example `hardcover-fiction`, `trade-fiction-paperback`, `combined-print-and-e-book-fiction`, or `young-adult-hardcover`. The full set of valid names is the [`/lists/names.json`](https://api.nytimes.com/svc/books/v3/lists/names.json) endpoint, and an unknown `ref` fails the run with a message pointing there. Each entry contributes its `primary_isbn13`/`primary_isbn10` and every edition in `isbns[]` as match identifiers, and `ordered: true` yields a reading list ranked #1..#n. NYT titles arrive ALL-CAPS and are normalized to title case for display; matching is identifier-based (case-insensitive) either way.
 
@@ -259,8 +291,8 @@ All routes except `/health` require `Authorization: Bearer $LIBRETTO_API_KEY`. T
 | `POST /api/validate`                     | `{ recipe: {...} }` or `{ all: true }`, returns `issues[]`, mutates nothing.                                                                                                                                                                                                                                                                                                                                                                                        |
 | `POST /api/apply`                        | `{ scope: "all" \| "<recipeId>" }`, returns `{ runId }`.                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `GET /api/runs`, `GET /api/runs/:id`     | Run history (last 50) with per-recipe counts, `missing[]`, and (when a recipe acquires) an `acquisition` block.                                                                                                                                                                                                                                                                                                                                                     |
-| `GET /api/collections`                   | Produced collections, read back from the targets by marker.                                                                                                                                                                                                                                                                                                                                                                                                         |
-| `GET /api/collections/:recipeId/missing` | The recipe's wanted-but-unheld member **identities** (`{ label, title, authors, isbn, identifiers }[]`) with held/missing counts — enough for a consumer to mint one request per missing book.                                                                                                                                                                                                                                                                      |
+| `GET /api/collections`                   | Produced collections, read back from the targets by marker. One entry per (recipe, target), each tagging its `server`/`libraryId` and the marker's `category` (or `null`).                                                                                                                                                                                                                                                                                          |
+| `GET /api/collections/:recipeId/missing` | The recipe's wanted-but-unheld member **identities** (`{ label, title, authors, isbn, identifiers }[]`) with held/missing counts — enough for a consumer to mint one request per missing book. Multi-target: a per-target breakdown in `targets[]` (each entry's `missing[]` is missing FROM that target); the top-level fields mirror the first reachable target.                                                                                                  |
 | `POST /api/resolve`                      | Resolve `{ isbn?, title?, author?, identifiers? }` to a Google Books volume id (ISBN-first, guarded title fallback). Returns `{ resolved, reason }`: `resolved` is the volume or `null`, and the additive `reason` is `resolved` \| `no_match` \| `quota_exhausted` \| `upstream_error` (so a dead quota / upstream error is distinguishable from an honest miss — `resolved` is `null` for all three failure reasons). `503` when `GOOGLE_BOOKS_API_KEY` is unset. |
 | `GET /api/search?type=&q=&limit=`        | Typeahead for a builder's `ref`: find a series/list by NAME. `hardcover_series` and `hardcover_comics` proxy Hardcover's series search (`{ ref, name, workCount?, author? }[]`, cached, rate-limit paced); `nyt_list` filters the built-in list names (no key, no external call); `static_ids` returns nothing (free-form). `{ type, query, results, truncated }`. Unknown `type` `400`; unconfigured source `503`.                                                 |
 | `POST /api/preview`                      | `{ builder: {...}, limit? }` → the **member-level identities** a draft builder would resolve to (`{ label, title, author, isbn, position, identifiers }[]`) with `total` and a `truncated` flag (capped at 100), so a consumer can split held vs missing before save. Mutates nothing; `502` when the builder source is unavailable.                                                                                                                                |

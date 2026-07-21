@@ -6,10 +6,12 @@ import { RunQueue } from '../core/queue.js';
 import { Scheduler } from '../core/scheduler.js';
 import { RecipeStore } from '../recipes/store.js';
 import { RunStore, type RunRecord } from '../runs/store.js';
+import { FakeTarget } from '../target/fake.js';
 import {
   makeRecipe,
   makeSeededTarget,
   makeTempDir,
+  multiRegistry,
   registryFor,
   silentLogger,
 } from '../testing/fixtures.js';
@@ -557,5 +559,135 @@ describe('API', () => {
       const targetsRes = await app.request('/api/targets', { headers: auth });
       expect(((await targetsRes.json()) as { targets: unknown[] }).targets).toHaveLength(2);
     });
+  });
+});
+
+describe('API — multi-target wire (ADR-076)', () => {
+  let app: Hono;
+  let cleanup: () => Promise<void>;
+  let queue: RunQueue;
+  let scheduler: Scheduler;
+
+  beforeEach(async () => {
+    const tmp = await makeTempDir();
+    cleanup = tmp.cleanup;
+    const config = loadConfig({ CONFIG_DIR: tmp.dir, LIBRETTO_API_KEY: KEY } as NodeJS.ProcessEnv);
+    const recipeStore = new RecipeStore(config.recipesDir);
+    const runStore = new RunStore(config.runsFile);
+
+    // Two distinct fakes: Kavita holds isbn:1..3, ABS holds only isbn:1..2 (lacks isbn:3).
+    const kavita = new FakeTarget();
+    kavita.seedLibrary({
+      id: 'kav',
+      name: 'Kavita',
+      items: [1, 2, 3].map((n) => ({
+        id: `k-${n}`,
+        title: `Book ${n}`,
+        identifiers: [`isbn:${n}`],
+      })),
+    });
+    const abs = new FakeTarget();
+    abs.seedLibrary({
+      id: 'abs',
+      name: 'ABS',
+      items: [1, 2].map((n) => ({ id: `a-${n}`, title: `Book ${n}`, identifiers: [`isbn:${n}`] })),
+    });
+    const targets = multiRegistry({ kavita, abs });
+    queue = new RunQueue({ recipeStore, runStore, targets, builders: {}, log: silentLogger });
+    scheduler = new Scheduler(recipeStore, queue, silentLogger);
+    app = createApp({
+      config,
+      recipeStore,
+      runStore,
+      queue,
+      scheduler,
+      targets,
+      builders: {},
+      resolve: undefined,
+      log: silentLogger,
+    });
+  });
+
+  afterEach(async () => {
+    scheduler.stop();
+    await cleanup();
+  });
+
+  const twoTargetBody = {
+    targets: [
+      { server: 'kavita', libraryId: 'kav' },
+      { server: 'abs', libraryId: 'abs' },
+    ],
+    name: 'Two Target',
+    category: 'Authors',
+    builder: { type: 'static_ids', ref: ['isbn:1', 'isbn:2', 'isbn:3'] },
+    variables: { syncMode: 'sync', ordered: false, schedule: 'manual' },
+    enabled: true,
+  };
+
+  it('applies into both targets: run has one result per target, each carrying its own missing[]', async () => {
+    await app.request('/api/recipes/two-target', {
+      method: 'PUT',
+      headers: jsonHeaders,
+      body: JSON.stringify(twoTargetBody),
+    });
+    const apply = await app.request('/api/apply', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ scope: 'two-target' }),
+    });
+    const { runId } = (await apply.json()) as { runId: string };
+    await queue.onIdle();
+
+    const { run } = (await (await app.request(`/api/runs/${runId}`, { headers: auth })).json()) as {
+      run: RunRecord;
+    };
+    expect(run.recipes).toHaveLength(2);
+    const kav = run.recipes.find((r) => r.target.server === 'kavita');
+    const abs = run.recipes.find((r) => r.target.server === 'abs');
+    expect(kav?.missing).toEqual([]); // Kavita holds all three
+    expect(abs?.missing).toEqual(['isbn:3']); // ABS lacks isbn:3 -> missing FROM abs
+  });
+
+  it('GET /collections returns one entry per (recipe, target), each tagged with the category', async () => {
+    await app.request('/api/recipes/two-target', {
+      method: 'PUT',
+      headers: jsonHeaders,
+      body: JSON.stringify(twoTargetBody),
+    });
+    await app.request('/api/apply', {
+      method: 'POST',
+      headers: jsonHeaders,
+      body: JSON.stringify({ scope: 'two-target' }),
+    });
+    await queue.onIdle();
+
+    const { collections } = (await (
+      await app.request('/api/collections', { headers: auth })
+    ).json()) as { collections: { server: string; recipeId: string; category: string | null }[] };
+    expect(collections).toHaveLength(2);
+    expect(collections.map((c) => c.server).sort()).toEqual(['abs', 'kavita']);
+    expect(collections.every((c) => c.recipeId === 'two-target')).toBe(true);
+    expect(collections.every((c) => c.category === 'Authors')).toBe(true);
+  });
+
+  it('GET /:recipeId/missing splits missing per target in targets[]', async () => {
+    await app.request('/api/recipes/two-target', {
+      method: 'PUT',
+      headers: jsonHeaders,
+      body: JSON.stringify(twoTargetBody),
+    });
+    const res = await app.request('/api/collections/two-target/missing', { headers: auth });
+    expect(res.status).toBe(200);
+    const payload = (await res.json()) as {
+      total: number;
+      targets: { server: string; missingCount?: number; missing?: { label: string }[] }[];
+    };
+    expect(payload.total).toBe(3);
+    const kav = payload.targets.find((t) => t.server === 'kavita');
+    const abs = payload.targets.find((t) => t.server === 'abs');
+    expect(kav?.missingCount).toBe(0);
+    expect(abs?.missingCount).toBe(1);
+    expect(abs?.missing?.map((m) => m.label)).toEqual(['isbn:3']);
   });
 });

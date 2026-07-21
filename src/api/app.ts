@@ -15,7 +15,7 @@ import {
 } from '../recipes/schema.js';
 import type { RecipeStore } from '../recipes/store.js';
 import type { RunStore } from '../runs/store.js';
-import { recipeIdFromDescription } from '../target/marker.js';
+import { categoryFromDescription, recipeIdFromDescription } from '../target/marker.js';
 import type { TargetRegistry } from '../target/registry.js';
 import { TargetUnavailableError } from '../target/types.js';
 import {
@@ -224,34 +224,39 @@ export function createApp(deps: AppDeps): Hono {
     const scanned = new Set<string>();
     const collections: unknown[] = [];
     const issues: { server: string; libraryId: string; message: string }[] = [];
+    // Multi-target (ADR-076 C-02): scan EACH distinct (server, libraryId) a recipe targets, so a
+    // multi-target recipe surfaces one entry per (recipe, target), each tagging its target and the
+    // recipe-authored category carried in the marker.
     for (const recipe of recipes) {
-      const { server, libraryId } = recipe.targetLibrary;
-      const key = `${server}:${libraryId}`;
-      if (scanned.has(key)) continue;
-      scanned.add(key);
-      try {
-        const target = targets.for(server);
-        for (const collection of await target.listCollections(libraryId)) {
-          const recipeId = recipeIdFromDescription(collection.description);
-          if (recipeId === undefined) continue; // unmarked: not ours, not reported
-          collections.push({
-            server,
-            libraryId,
-            recipeId,
-            targetCollectionId: collection.id,
-            name: collection.name,
-            itemCount: collection.itemIds.length,
-            itemIds: collection.itemIds,
-          });
-        }
-      } catch (error) {
-        const message =
-          error instanceof TargetUnavailableError
-            ? error.message
-            : error instanceof Error
+      for (const { server, libraryId } of recipe.targets) {
+        const key = `${server}:${libraryId}`;
+        if (scanned.has(key)) continue;
+        scanned.add(key);
+        try {
+          const target = targets.for(server);
+          for (const collection of await target.listCollections(libraryId)) {
+            const recipeId = recipeIdFromDescription(collection.description);
+            if (recipeId === undefined) continue; // unmarked: not ours, not reported
+            collections.push({
+              server,
+              libraryId,
+              recipeId,
+              category: categoryFromDescription(collection.description) ?? null,
+              targetCollectionId: collection.id,
+              name: collection.name,
+              itemCount: collection.itemIds.length,
+              itemIds: collection.itemIds,
+            });
+          }
+        } catch (error) {
+          const message =
+            error instanceof TargetUnavailableError
               ? error.message
-              : String(error);
-        issues.push({ server, libraryId, message });
+              : error instanceof Error
+                ? error.message
+                : String(error);
+          issues.push({ server, libraryId, message });
+        }
       }
     }
     return c.json({ collections, issues });
@@ -275,30 +280,58 @@ export function createApp(deps: AppDeps): Hono {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
     }
 
-    const { libraryId, server } = recipe.targetLibrary;
-    try {
-      const items = await targets.for(server).listItems(libraryId);
-      const { matchedIds, missingWorks } = matchWorks(works, items, {
-        titleFallback: recipe.variables.titleFallback,
-        grain: isSeriesGrain(recipe.builder) ? 'series' : 'work',
-      });
-      return c.json({
-        recipeId: recipe.id,
-        server,
-        libraryId,
-        name: recipe.name,
-        total: works.length,
-        heldCount: matchedIds.length,
-        missingCount: missingWorks.length,
-        missing: missingWorks.map(toMissingMember),
-      });
-    } catch (error) {
-      const message =
-        error instanceof TargetUnavailableError || error instanceof Error
-          ? error.message
-          : String(error);
-      return c.json({ error: message }, 502);
+    // Per-target missing (ADR-076 C-05): match the SAME work list against EACH target's library, so
+    // each entry's missing[] is the works missing FROM that target (kavita => ebook side, abs =>
+    // audiobook side). The flat top-level fields mirror the first reachable target — a single-target
+    // recipe's whole truth, and back-compat for consumers that predate multi-target.
+    const grain = isSeriesGrain(recipe.builder) ? 'series' : 'work';
+    interface MissingTargetEntry {
+      server: 'kavita' | 'abs';
+      libraryId: string;
+      heldCount?: number;
+      missingCount?: number;
+      missing?: ReturnType<typeof toMissingMember>[];
+      error?: string;
     }
+    const perTarget: MissingTargetEntry[] = [];
+    for (const { server, libraryId } of recipe.targets) {
+      try {
+        const items = await targets.for(server).listItems(libraryId);
+        const { matchedIds, missingWorks } = matchWorks(works, items, {
+          titleFallback: recipe.variables.titleFallback,
+          grain,
+        });
+        perTarget.push({
+          server,
+          libraryId,
+          heldCount: matchedIds.length,
+          missingCount: missingWorks.length,
+          missing: missingWorks.map(toMissingMember),
+        });
+      } catch (error) {
+        const message =
+          error instanceof TargetUnavailableError || error instanceof Error
+            ? error.message
+            : String(error);
+        perTarget.push({ server, libraryId, error: message });
+      }
+    }
+    const primary = perTarget.find((entry) => entry.error === undefined);
+    if (!primary) {
+      // Every target failed — surface the first error like the pre-multi-target endpoint did.
+      return c.json({ error: perTarget[0]?.error ?? 'no targets' }, 502);
+    }
+    return c.json({
+      recipeId: recipe.id,
+      name: recipe.name,
+      total: works.length,
+      server: primary.server,
+      libraryId: primary.libraryId,
+      heldCount: primary.heldCount,
+      missingCount: primary.missingCount,
+      missing: primary.missing,
+      targets: perTarget,
+    });
   });
 
   // --- Resolve broker (M3 direction-a): resolve an ISBN|title+author to a Google-Books volume id

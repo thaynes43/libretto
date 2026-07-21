@@ -2,9 +2,15 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AcquisitionCounts } from '../acquire/acquire.js';
 
-/** Per-recipe outcome recorded into the run (DESIGN-037 D-02 Run counts + M3 acquisition). */
+/** Per-(recipe, target) outcome recorded into the run (DESIGN-037 D-02 Run counts + M3 acquisition). */
 export interface RecipeRunResult {
   recipeId: string;
+  /**
+   * Which target this result belongs to (ADR-076 multi-target): a recipe yields one result per
+   * target, so a run's `recipes[]` carries N entries for an N-target recipe. `missing` below are the
+   * works missing FROM this target; `acquisition` (when present) drove this target's format.
+   */
+  target: { server: 'kavita' | 'abs'; libraryId: string };
   counts: {
     /** Work-list entries that matched a library item (by identifier or title). */
     matched: number;

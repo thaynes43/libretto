@@ -65,6 +65,13 @@ export interface CreateCollectionInput {
 export interface UpdateCollectionInput {
   /** Full ordered membership to write (replace semantics). */
   itemIds: string[];
+  /**
+   * When present, re-write the collection's description/summary too (ADR-076 C-02): the reconciler
+   * passes this only when the recipe's provenance marker changed (a category was set/changed on an
+   * already-produced collection). Omitted on a pure membership reconcile, so the historical
+   * "descriptions are never touched" behavior is unchanged for markerless category-free recipes.
+   */
+  description?: string;
 }
 
 export interface TargetClient {

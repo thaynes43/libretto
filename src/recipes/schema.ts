@@ -2,9 +2,16 @@ import { z } from 'zod';
 import { Cron } from 'croner';
 
 /**
- * The Recipe shape is the provider-parity contract noun from DESIGN-037 D-02, verbatim:
- * { id, targetLibrary, name, builder { type, ref }, variables
+ * The Recipe shape is the provider-parity contract noun from DESIGN-037 D-02:
+ * { id, targets[], name, category?, builder { type, ref }, variables
  *   { syncMode, ordered, acquisitionEnabled, tag, schedule }, enabled }
+ *
+ * MULTI-TARGET (ADR-076): a recipe declares `targets[]` (1..N, distinct servers) and Libretto
+ * materializes the SAME builder output into EACH target — "the same series in Kavita and ABS" is
+ * now ONE two-target recipe. Back-compat: a single `targetLibrary` object is still accepted and
+ * normalized to a one-entry `targets[]`, so existing single-target recipe YAMLs stay valid. The
+ * canonical (parsed/emitted) shape is always `targets[]`. An optional `category` feeds the
+ * provenance marker's `cat=` token (recipe-authored collection categories).
  *
  * Recipes are YAML files in CONFIG_DIR/recipes, one file per recipe, filename = id.
  * Libretto never rewrites them on its own; the only writer is the explicit API save.
@@ -30,10 +37,23 @@ const scheduleSchema = z.union([
     .refine(isValidCronExpression, 'must be a valid cron expression or the string "manual"'),
 ]);
 
-const targetLibrarySchema = z.strictObject({
+/** One configured target: a server kind and a library id on it (ADR-076 C-01). */
+const targetSchema = z.strictObject({
   server: z.enum(['kavita', 'abs']),
   libraryId: z.string().min(1),
 });
+
+/**
+ * A static_ids entry (D-04): either a bare identifier string, OR a `{ title, author }` pair.
+ * The latter carries NO identifier, so it rides the conservative title+author fallback
+ * (matchedVia: title_author) — this keeps hand-curated canon recipes (the Authors program)
+ * self-contained without an external ID lookup at authoring time.
+ */
+const staticEntrySchema = z.union([
+  z.string().min(1),
+  z.strictObject({ title: z.string().min(1), author: z.string().min(1) }),
+]);
+export type StaticEntry = z.infer<typeof staticEntrySchema>;
 
 /**
  * Builder set (DESIGN-037 D-05): static_ids (the tracer — the ref IS the ordered
@@ -60,7 +80,7 @@ const targetLibrarySchema = z.strictObject({
 export const builderSchema = z.discriminatedUnion('type', [
   z.strictObject({
     type: z.literal('static_ids'),
-    ref: z.array(z.string().min(1)).min(1),
+    ref: z.array(staticEntrySchema).min(1),
   }),
   z.strictObject({
     type: z.literal('hardcover_series'),
@@ -99,11 +119,30 @@ const variablesSchema = z.strictObject({
   schedule: scheduleSchema,
 });
 
+/** Category text must not carry the marker delimiters, so it can never corrupt the grammar. */
+const CATEGORY_FORBIDDEN = /[[\]|]/;
+
 export const recipeSchema = z
   .strictObject({
     id: z.string().regex(RECIPE_ID_PATTERN, 'id must match ' + RECIPE_ID_PATTERN.source),
-    targetLibrary: targetLibrarySchema,
+    /**
+     * Multi-target (ADR-076 C-01): declare `targets` (1..N, distinct servers). Back-compat:
+     * a single `targetLibrary` is accepted instead and normalized to a one-entry `targets[]`
+     * by the transform below — provide exactly one of the two. The canonical shape is `targets`.
+     */
+    targetLibrary: targetSchema.optional(),
+    targets: z.array(targetSchema).min(1).optional(),
     name: z.string().min(1),
+    /**
+     * Optional recipe-authored collection category (ADR-076 C-02): written into the provenance
+     * marker as `[libretto:<id>|cat=<category>]`, so a downstream mirror can categorize the
+     * collection. Plain marker text, nothing consumer-specific; kept free of `[`, `]`, `|`.
+     */
+    category: z
+      .string()
+      .min(1)
+      .refine((value) => !CATEGORY_FORBIDDEN.test(value), 'category must not contain [, ] or |')
+      .optional(),
     builder: builderSchema,
     variables: variablesSchema,
     enabled: z.boolean(),
@@ -120,9 +159,44 @@ export const recipeSchema = z
           'comics recipes (hardcover_comics) cannot acquire — comics acquisition is out of scope; set acquisitionEnabled: false',
       });
     }
+    // Exactly one target source: `targets` (the canonical form) OR `targetLibrary` (back-compat).
+    const hasSingle = recipe.targetLibrary !== undefined;
+    const hasArray = recipe.targets !== undefined;
+    if (hasSingle && hasArray) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['targets'],
+        message: 'provide either targets or targetLibrary, not both',
+      });
+    } else if (!hasSingle && !hasArray) {
+      ctx.addIssue({
+        code: 'custom',
+        path: ['targets'],
+        message: 'a recipe must declare targets (an array of { server, libraryId })',
+      });
+    }
+    // Distinct servers: a recipe targets at most one library per server (one kavita, one abs).
+    if (recipe.targets) {
+      const servers = recipe.targets.map((target) => target.server);
+      if (new Set(servers).size !== servers.length) {
+        ctx.addIssue({
+          code: 'custom',
+          path: ['targets'],
+          message: 'each target must be a distinct server (at most one kavita and one abs)',
+        });
+      }
+    }
+  })
+  .transform((recipe) => {
+    // Normalize to the canonical `targets[]` (a single `targetLibrary` becomes a one-entry array)
+    // and drop the back-compat alias so the emitted/stored shape is always `targets`.
+    const targets = recipe.targets ?? (recipe.targetLibrary ? [recipe.targetLibrary] : []);
+    const { targetLibrary: _targetLibrary, targets: _targets, ...rest } = recipe;
+    return { ...rest, targets };
   });
 
 export type Builder = z.infer<typeof builderSchema>;
+export type Target = z.infer<typeof targetSchema>;
 export type Recipe = z.infer<typeof recipeSchema>;
 export type RecipeInput = z.input<typeof recipeSchema>;
 

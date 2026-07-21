@@ -6,7 +6,7 @@ import type { Recipe } from '../recipes/schema.js';
 import type { RecipeStore } from '../recipes/store.js';
 import type { RecipeRunResult, RunStatus, RunStore } from '../runs/store.js';
 import type { TargetRegistry } from '../target/registry.js';
-import { reconcileRecipe } from './reconciler.js';
+import { reconcileRecipeTargets } from './reconciler.js';
 
 export interface RunQueueDeps {
   recipeStore: RecipeStore;
@@ -74,17 +74,29 @@ export class RunQueue {
       }
       for (const recipe of recipes) {
         try {
-          const target = targets.for(recipe.targetLibrary.server);
-          results.push(await reconcileRecipe(recipe, target, log, builders, acquire));
+          // Multi-target (ADR-076): one recipe reconciles into EACH of its targets, yielding one
+          // result per target. reconcileRecipeTargets tolerates a per-target failure internally.
+          results.push(...(await reconcileRecipeTargets(recipe, targets, log, builders, acquire)));
         } catch (error) {
+          // Last-resort safety net for an unexpected throw: one error row per target.
           const message = error instanceof Error ? error.message : String(error);
           log.error({ recipeId: recipe.id, err: error }, 'recipe reconcile failed');
-          results.push({
-            recipeId: recipe.id,
-            counts: { matched: 0, matchedByTitle: 0, written: 0, added: 0, removed: 0, missing: 0 },
-            missing: [],
-            error: message,
-          });
+          for (const targetLib of recipe.targets) {
+            results.push({
+              recipeId: recipe.id,
+              target: { server: targetLib.server, libraryId: targetLib.libraryId },
+              counts: {
+                matched: 0,
+                matchedByTitle: 0,
+                written: 0,
+                added: 0,
+                removed: 0,
+                missing: 0,
+              },
+              missing: [],
+              error: message,
+            });
+          }
         }
       }
     } catch (error) {

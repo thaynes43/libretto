@@ -89,6 +89,8 @@ export class FakeTarget implements TargetClient {
   updateCollection(collectionId: string, patch: UpdateCollectionInput): Promise<TargetCollection> {
     const collection = this.mustGetCollection(collectionId);
     collection.itemIds = [...patch.itemIds];
+    // Marker re-sync (ADR-076 C-02): only when the reconciler passes a new description.
+    if (patch.description !== undefined) collection.description = patch.description;
     return Promise.resolve(clone(collection));
   }
 
