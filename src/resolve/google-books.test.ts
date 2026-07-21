@@ -213,13 +213,45 @@ describe('GoogleBooksResolver non-200 honesty', () => {
     expect(JSON.stringify(entries)).not.toContain(secretKey);
   });
 
-  it('classifies a persistent 503 as a retryable upstream error — retried, then surfaced (not a no-match)', async () => {
+  // #14 — the audio-ISBN robustness fix. A popular book's FIRST identifier is often an audiobook-edition
+  // ISBN Google Books does not index (The Expanse's Nemesis Games 9781478903956, Leviathan Falls
+  // 9781705024997); the reliable path for those is the guarded title fallback. The prior bug: a transient
+  // 5xx on that ISBN leg THREW and skipped the title fallback, so a GB-title-indexed book stayed
+  // permanently unresolved on any 503-weather pass. The ISBN leg is now best-effort + retry-free.
+  it('falls THROUGH to the title fallback when the ISBN leg 503s (the audio-ISBN fix)', async () => {
+    const isbnQ = 'isbn:9781478903956'; // a Macmillan-Audio ISBN GB can't answer
+    const titleQ = 'intitle:Nemesis Games+inauthor:James S. A. Corey';
+    let n = 0;
+    const fetchImpl = (async (url: string | URL): Promise<Response> => {
+      n += 1;
+      const q = new URL(String(url)).searchParams.get('q') ?? '';
+      if (q === isbnQ)
+        return new Response(JSON.stringify({ error: { message: 'blip' } }), { status: 503 });
+      if (q === titleQ)
+        return new Response(
+          JSON.stringify({
+            items: [vol('VOL_NG', 'Nemesis Games', ['James S. A. Corey'], '9780316334716')],
+          }),
+          { status: 200 },
+        );
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl, sleepImpl: async () => {} });
+    const out = await r.resolveVolume({
+      isbn: '9781478903956',
+      title: 'Nemesis Games',
+      author: 'James S. A. Corey',
+    });
+    expect(out).toEqual({ volumeId: 'VOL_NG', isbn13: '9780316334716', via: 'title' });
+    // ISBN leg tried ONCE (no retries burned on the doomed leg), then the title leg resolved: 2 calls total.
+    expect(n).toBe(2);
+  });
+
+  it('surfaces upstream_error when BOTH the ISBN and title legs 503 (never a silent no-match)', async () => {
     const { fetchImpl, calls } = statusFetch(503, { error: { message: 'backend error' } });
-    const { log } = captureLogger();
     const r = new GoogleBooksResolver({
       apiKey: 'k',
       fetchImpl,
-      log,
       retries: 1,
       sleepImpl: async () => {},
     });
@@ -228,9 +260,20 @@ describe('GoogleBooksResolver non-200 honesty', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(GoogleBooksUpstreamError);
     expect((err as GoogleBooksUpstreamError).kind).toBe('upstream_error');
-    expect((err as GoogleBooksUpstreamError).status).toBe(503);
-    // one initial attempt + one retry before giving up.
-    expect(calls()).toBe(2);
+    // ISBN leg: 1 call (retry-free). Title leg: 1 + 1 retry = 2. Total 3 — the fall-through happened.
+    expect(calls()).toBe(3);
+  });
+
+  it('does NOT fall through to the title leg on a dead daily quota (the title leg would be dead too)', async () => {
+    const { fetchImpl, calls } = statusFetch(429, QUOTA_BODY);
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl, sleepImpl: async () => {} });
+    const err = await r
+      .resolveVolume({ isbn: '9781478903956', title: 'Nemesis Games' })
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GoogleBooksUpstreamError);
+    expect((err as GoogleBooksUpstreamError).kind).toBe('quota_exhausted');
+    // The ISBN leg latched the daily-quota breaker and re-threw — the title leg is never attempted.
+    expect(calls()).toBe(1);
   });
 
   it('returns null for a legitimate 200 totalItems:0 — an honest no-match, distinct from an error', async () => {
