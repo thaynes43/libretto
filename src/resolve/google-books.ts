@@ -290,7 +290,7 @@ export class GoogleBooksResolver {
     return Boolean(this.apiKey) || !this.baseUrl.startsWith('https://www.googleapis.com');
   }
 
-  private async getJson(url: string, q: string): Promise<unknown> {
+  private async getJson(url: string, q: string, maxRetries = this.retries): Promise<unknown> {
     let attempt = 0;
     for (;;) {
       const controller = new AbortController();
@@ -300,7 +300,7 @@ export class GoogleBooksResolver {
         response = await this.fetchImpl(url, { signal: controller.signal });
       } catch (error) {
         clearTimeout(timer);
-        if (attempt < this.retries) {
+        if (attempt < maxRetries) {
           attempt += 1;
           await this.sleepImpl(this.backoffMs * attempt);
           continue;
@@ -341,7 +341,7 @@ export class GoogleBooksResolver {
           );
         }
         // 429 burst / 5xx backend blips are transient — retry, then give up as a retryable upstream error.
-        if ((response.status === 429 || response.status >= 500) && attempt < this.retries) {
+        if ((response.status === 429 || response.status >= 500) && attempt < maxRetries) {
           attempt += 1;
           await this.sleepImpl(this.backoffMs * attempt);
           continue;
@@ -362,10 +362,10 @@ export class GoogleBooksResolver {
     }
   }
 
-  private async query(q: string): Promise<Volume[]> {
+  private async query(q: string, maxRetries?: number): Promise<Volume[]> {
     const params = new URLSearchParams({ q, maxResults: '5', country: 'US' });
     if (this.apiKey) params.set('key', this.apiKey);
-    const raw = await this.getJson(`${this.baseUrl}/volumes?${params.toString()}`, q);
+    const raw = await this.getJson(`${this.baseUrl}/volumes?${params.toString()}`, q, maxRetries);
     const items = (raw as { items?: unknown })?.items;
     return Array.isArray(items) ? (items as Volume[]) : [];
   }
@@ -391,13 +391,28 @@ export class GoogleBooksResolver {
       );
     }
     if (input.isbn) {
-      const [vol] = await this.query(`isbn:${input.isbn}`);
-      if (vol) {
-        return {
-          volumeId: vol.id,
-          isbn13: GoogleBooksResolver.pickIsbn13(vol) ?? input.isbn,
-          via: 'isbn',
-        };
+      // The ISBN leg is BEST-EFFORT and cheap (no retries): a popular book's FIRST identifier is often an
+      // audiobook-edition ISBN (e.g. The Expanse's "Nemesis Games" 9781478903956, "Leviathan Falls"
+      // 9781705024997) that Google Books does not index, so this leg frequently misses — the reliable path
+      // for those is the title fallback below. A transient 5xx/timeout on THIS leg must therefore NOT abort
+      // the whole resolve (the prior bug: the throw skipped the title fallback, so a GB-title-indexed book
+      // stayed permanently unresolved on any 503-weather pass). Fall through to the title fallback on any
+      // ISBN-leg failure EXCEPT a dead daily quota (the title leg would be dead too — re-throw that).
+      try {
+        const [vol] = await this.query(`isbn:${input.isbn}`, 0);
+        if (vol) {
+          return {
+            volumeId: vol.id,
+            isbn13: GoogleBooksResolver.pickIsbn13(vol) ?? input.isbn,
+            via: 'isbn',
+          };
+        }
+      } catch (error) {
+        if (error instanceof GoogleBooksUpstreamError && error.kind === 'quota_exhausted') throw error;
+        this.log.debug(
+          { isbn: input.isbn, err: error instanceof Error ? error.message : String(error) },
+          'google books: ISBN leg failed transiently; falling through to the guarded title fallback',
+        );
       }
     }
     const primary = await this.resolveByTitle(gbQueryTitle(input.title), input);
