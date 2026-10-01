@@ -311,3 +311,12 @@ Node 22+, [pnpm](https://pnpm.io/). `pnpm install`, then:
 [AGPL-3.0](LICENSE). If you run a modified Libretto as a service, share your changes.
 
 > Container images publish to `ghcr.io/thaynes43/libretto` (`latest` and `sha` tags) on every merge to main.
+
+## Automated PR review (agents read this)
+
+Every non-draft PR gets an advisory review from Claude Code (`.github/workflows/claude-code-review.yml`), and `@claude` mentions in issues and PRs are handled by `claude.yml`. The review is **advisory**: it is not a required check, and it skips fork PRs and dependabot/renovate PRs. Agents must read its findings before merging. Every finding gets fixed, or answered on the PR with a concrete reason it is wrong; never "merging anyway".
+
+Prerequisites (both are needed, otherwise the jobs skip green and review nothing):
+
+- the Claude GitHub App is installed with access to this repo
+- the `CLAUDE_CODE_OAUTH_TOKEN` repo secret exists

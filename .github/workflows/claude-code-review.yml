@@ -1,0 +1,148 @@
+name: Claude Code Review
+
+# Advisory automated review. NOT a required check: never add it to branch rules.
+# Agents open PRs ready-for-review and merge their own once every check is green,
+# so this fires on opened/synchronize too. These four types are exactly the set
+# track_progress supports. Fork PRs and bot PRs get no repo secrets and skip.
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: read
+
+# Re-review on every push, but only the newest push per PR.
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-review:
+    name: Claude advisory review
+    if: >-
+      ${{ !github.event.pull_request.draft
+      && github.event.pull_request.head.repo.full_name == github.repository
+      && github.event.pull_request.user.login != 'dependabot[bot]'
+      && github.event.pull_request.user.login != 'renovate[bot]' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      pull-requests: write # post the review + inline comments
+      id-token: write # OIDC exchange for the Claude GitHub App token
+      actions: read # read CI results for the PR
+
+    steps:
+      # Secrets cannot appear in `if:`, so gate on a step output. Until the
+      # CLAUDE_CODE_OAUTH_TOKEN repo secret exists this job finishes green.
+      - name: Check for CLAUDE_CODE_OAUTH_TOKEN
+        id: gate
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+        run: |
+          if [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::CLAUDE_CODE_OAUTH_TOKEN is not set; skipping the advisory review."
+          fi
+
+      - name: Checkout repository
+        if: steps.gate.outputs.enabled == 'true'
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Claude Code Review
+        if: steps.gate.outputs.enabled == 'true'
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: 'haynes-dev-bot'
+          track_progress: true
+          use_sticky_comment: true
+          # Automated surfaces pin the newest Opus explicitly, never an alias.
+          # `--allowedTools` merges with tag mode's base set; without the Bash and
+          # inline-comment grants below Claude cannot run `gh` or post line comments.
+          claude_args: |
+            --model claude-opus-5-5
+            --max-turns 60
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*)"
+          additional_permissions: |
+            actions: read
+          prompt: |
+            You are the automated reviewer for Libretto: a stateless TypeScript service
+            (Node 22, pnpm, Hono, zod, vitest) that builds collections in Kavita and
+            Audiobookshelf from YAML recipes. The PR branch is already checked out.
+            Review PR #${{ github.event.pull_request.number }} of ${{ github.repository }}.
+
+            ## Step 1 - context
+            - `gh pr diff ${{ github.event.pull_request.number }}` for the changes
+            - `gh pr view ${{ github.event.pull_request.number }}` for intent
+            - Read `README.md` (the stateless philosophy, matching rules, reconciler
+              safety rules, API table). Do not repeat feedback already on the PR.
+
+            ## Step 2 - what this repo cares about
+            Layout: `src/api` (Hono routes), `src/builders` (hardcover, NYT), `src/core`
+            (reconciler, queue, scheduler), `src/matching`, `src/recipes`, `src/runs`,
+            `src/cache`, `src/target` (Kavita, ABS, fake, provenance marker),
+            `src/testing` (stub servers and fixtures).
+
+            **CRITICAL - block the merge**
+            - Secrets or PII: any committed API key, token, `.env`, real server URL, or
+              library content. Tokens (`LIBRETTO_API_KEY`, `KAVITA_API_KEY`, `ABS_TOKEN`,
+              `HARDCOVER_TOKEN`, `NYT_API_KEY`, `LAZYLIBRARIAN_API_KEY`) must never appear
+              in logs, error messages, run records, API responses or test fixtures.
+              Tests must use obvious placeholders and stub servers, never live credentials.
+            - API auth: every route under `/api` requires the Bearer key; only `/health`
+              is open. An unset `LIBRETTO_API_KEY` must keep the API locked. Flag any new
+              route that bypasses the auth middleware or compares keys unsafely.
+            - Reconciler safety rules: ownership is keyed ONLY on the provenance marker
+              (`[libretto:<recipeId>]`) in the description, never on the name; a
+              collection without the marker is never touched; `append` never removes; a
+              run matching zero items warns and leaves the collection alone; deleting a
+              recipe never deletes remotely; unmatched works go to `missing[]`, never
+              guessed at.
+            - Matching: identifier-exact first (ISBN-10 converted to ISBN-13, ASINs
+              uppercased). The title fallback is noise-stripped exact full-title equality
+              with the author guard and refuses ambiguity. Flag any fuzzy, substring,
+              prefix or edit-distance matching.
+            - Statelessness: no database, sidecar ownership file or other persisted
+              ownership state. Only recipes (written solely by the explicit `PUT`), the
+              rotating `runs.json` and the losable TTL cache live on `/config`.
+            - Logic errors: races, unhandled `undefined`, off-by-one, unbounded retries,
+              timers or cron jobs registered but never stopped.
+
+            **HIGH - should fix**
+            - Hardcover pacing (60 requests/minute) bypassed, or new outbound HTTP that
+              skips the shared client in `src/http.ts` (timeouts, error handling).
+            - Quota or upstream failure reported as a no-match (resolve broker must keep
+              them distinct).
+            - Recipe schema change (zod) that breaks existing recipes or the documented
+              YAML shape, with no migration or README update.
+            - Behaviour change with no test change; tests that need live credentials or
+              the network instead of the stub servers in `src/testing`.
+            - API, env var, recipe field or matching behaviour changed without updating
+              `README.md` (it is the contract other tools bind to).
+            - Dockerfile or workflow changes that run as root, widen permissions, or
+              pull secrets into the image.
+
+            **MEDIUM - consider**
+            - Unchecked access to external API data; missing zod validation at the
+              boundary.
+            - Casing or wording that contradicts the README's terminology.
+
+            **Ignore entirely:** formatting (prettier enforces it), import order, naming
+            taste, and feature suggestions beyond the PR's intent.
+
+            ## Step 3 - report
+            - Post each line-specific finding with
+              `mcp__github_inline_comment__create_inline_comment` (`confirmed: true`),
+              prefixing the body with its severity: `CRITICAL:`, `HIGH:` or `MEDIUM:`.
+            - Then post ONE summary comment with `gh pr comment`: a verdict (`Looks good` /
+              `Needs changes` / `Has critical issues`) and findings grouped by severity,
+              each naming file and line. Concise, no praise.
+            - If the diff is clean, say exactly "No findings." plus one sentence on what
+              you checked. Never invent a finding to look thorough.
+            - Only review files changed in this PR. Post GitHub comments only; do not
+              return the review as chat text.
