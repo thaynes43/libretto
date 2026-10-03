@@ -4,6 +4,7 @@ import {
   gbQueryTitle,
   gbAuthorsMatch,
   gbResolveTitleMatches,
+  gbIsOmnibusVolume,
   isDailyQuotaExhausted,
   parseGbError,
   GoogleBooksResolver,
@@ -338,5 +339,94 @@ describe('GoogleBooksResolver non-200 honesty', () => {
     const out = await r.resolveVolume({ isbn: '9780316129084', title: 'Leviathan Wakes' });
     expect(out).toEqual({ volumeId: 'VOL_HEAL', isbn13: '9780316129084', via: 'isbn' });
     expect(call).toBe(2);
+  });
+});
+
+describe('gbIsOmnibusVolume (bundle-resolve guard, 2026-10-03)', () => {
+  it('rejects a bundle whose subtitle lists the queried work, and a contents-list compilation', () => {
+    const bundle = {
+      title: 'The Odd Thomas Series 7-Book Bundle',
+      subtitle:
+        'Odd Thomas, Forever Odd, Brother Odd, Odd Hours, Odd Apocalypse, Odd Interlude, Deeply Odd',
+    };
+    // Coverage alone passes it (the subtitle carries both query tokens) - the omnibus guard is the stop.
+    expect(gbResolveTitleMatches('Odd Interlude #1', `${bundle.title} ${bundle.subtitle}`)).toBe(
+      true,
+    );
+    expect(gbIsOmnibusVolume(bundle, 'Odd Interlude #1')).toBe(true);
+    expect(
+      gbIsOmnibusVolume({ title: 'Dean Koontz', subtitle: 'Winter Moon; Icebound' }, 'Winter Moon'),
+    ).toBe(true);
+  });
+
+  it('allows a set when the query asks for one, and ordinary works', () => {
+    expect(
+      gbIsOmnibusVolume(
+        { title: 'The Dark Artifices, the Complete Collection' },
+        'The Dark Artifices, the Complete Collection',
+      ),
+    ).toBe(false);
+    expect(
+      gbIsOmnibusVolume(
+        { title: 'Hooked', subtitle: 'How to Build Habit-Forming Products' },
+        'Hooked',
+      ),
+    ).toBe(false);
+    expect(gbIsOmnibusVolume({ title: 'Odd Interlude' }, 'Odd Interlude #1')).toBe(false);
+  });
+
+  it('keeps ordinary single books whose subtitle carries series positioning, and a comma-heavy query', () => {
+    expect(
+      gbIsOmnibusVolume(
+        { title: 'Shadow and Bone', subtitle: 'The Grisha Trilogy, Book 1' },
+        'Shadow and Bone',
+      ),
+    ).toBe(false);
+    expect(
+      gbIsOmnibusVolume(
+        { title: 'Night Shift', subtitle: 'A Collection of Stories' },
+        'Night Shift',
+      ),
+    ).toBe(false);
+    // Two commas in the query must not double into a fake contents list (the query is tested per title).
+    expect(
+      gbIsOmnibusVolume(
+        { title: 'Eat, Pray, Love', subtitle: 'Eat, Pray, Love; Committed' },
+        'Eat, Pray, Love',
+        'Eat, Pray, Love',
+      ),
+    ).toBe(true);
+    expect(gbIsOmnibusVolume({ title: 'The Silo Series Collection' }, 'Wool')).toBe(true);
+  });
+
+  it('a raw query with a series-suffix parenthetical is not a request for a set', () => {
+    const boxed = {
+      title: 'The Grisha Trilogy Box Set',
+      subtitle: 'Shadow and Bone, Siege and Storm, Ruin and Rising',
+    };
+    expect(
+      gbIsOmnibusVolume(boxed, 'Shadow and Bone (The Grisha Trilogy, #1)', 'Shadow and Bone'),
+    ).toBe(true);
+  });
+
+  it('resolveVolume returns null for a bundle on the title leg but keeps an exact ISBN hit', async () => {
+    const bundle = {
+      id: 'VOL_BUNDLE',
+      volumeInfo: {
+        title: 'The Odd Thomas Series 7-Book Bundle',
+        subtitle:
+          'Odd Thomas, Forever Odd, Brother Odd, Odd Hours, Odd Apocalypse, Odd Interlude, Deeply Odd',
+        authors: ['Dean Koontz'],
+      },
+    };
+    const { fetchImpl } = fakeFetch({
+      'intitle:Odd Interlude #1+inauthor:Dean Koontz': [bundle],
+      'isbn:9780804180733': [bundle],
+    });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    expect(await r.resolveVolume({ title: 'Odd Interlude #1', author: 'Dean Koontz' })).toBeNull();
+    expect((await r.resolveVolume({ isbn: '9780804180733', title: 'x' }))?.volumeId).toBe(
+      'VOL_BUNDLE',
+    );
   });
 });

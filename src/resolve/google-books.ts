@@ -107,6 +107,54 @@ export function gbResolveTitleMatches(
   return covered >= Math.max(1, Math.ceil(q.length * 0.6));
 }
 
+/**
+ * OMNIBUS guard — is this resolved volume a bundle / box set / multi-work compilation the QUERY did not
+ * ask for? The coverage guard above compares against `title + subtitle`, and an omnibus lists its contents
+ * in the subtitle ("The Odd Thomas Series 7-Book Bundle: Odd Thomas, Forever Odd, ..., Odd Interlude, ..."),
+ * so a lookup for ONE member of a set covers its tokens and resolves to the whole bundle. Live 2026-10-03:
+ * the Odd Thomas collection's missing "Odd Interlude #1/#2" resolved to the 7- and 8-book bundles and the
+ * acquisition leg added them to LazyLibrarian. Two signals, either rejects:
+ *   - a packaging marker: bundle, omnibus, box/boxed set, compendium, starter pack or "N-Book" in the title
+ *     or subtitle, or "collection"/"trilogy" in the TITLE only (a single novel's subtitle often reads "The
+ *     Grisha Trilogy, Book 1"), or
+ *   - a contents-list subtitle (a `;`, or four-plus comma-separated parts),
+ * unless the QUERY itself carries the same signal (a wanted "Complete Collection" boxed set must still
+ * resolve to one). Title leg only — an exact ISBN hit is never second-guessed. Null is an honest gap.
+ */
+// STRONG markers name a packaged set wherever they appear (title or subtitle). WEAK markers ("trilogy",
+// "collection") also appear in the subtitle of an ordinary single book ("The Grisha Trilogy, Book 1",
+// "A Collection of Stories"), so they count only in the TITLE.
+const OMNIBUS_STRONG =
+  /\b(bundle|omnibus|box(?:ed)? ?set|compendium|starter pack|\d+[- ]books?|(?:two|three|four|five|six|seven|eight|nine|ten)[- ]books?)\b/i;
+const OMNIBUS_WEAK = /\b(collection|trilogy)\b/i;
+const anyMarker = (s: string): boolean => OMNIBUS_STRONG.test(s) || OMNIBUS_WEAK.test(s);
+
+function hasContentsList(text: string): boolean {
+  return text.includes(';') || text.split(',').length >= 4;
+}
+
+export function gbIsOmnibusVolume(
+  volume: { title?: string | undefined; subtitle?: string | undefined },
+  ...queryTitles: ReadonlyArray<string>
+): boolean {
+  // The query side is tested PER title (callers pass the raw and the de-noised title, usually the same text
+  // twice) - joining them would double the commas and fake a contents list.
+  // De-noised first (gbQueryTitle drops a trailing series parenthetical): "Shadow and Bone (The Grisha Trilogy, #1)"
+  // is a request for ONE book, not for a trilogy.
+  const queries = queryTitles.map(gbQueryTitle);
+  const queryAsksForSet = queries.some(anyMarker);
+  const volumeText = [volume.title, volume.subtitle].filter(Boolean).join(' ');
+  if (
+    !queryAsksForSet &&
+    (OMNIBUS_STRONG.test(volumeText) || OMNIBUS_WEAK.test(volume.title ?? ''))
+  ) {
+    return true;
+  }
+  if (volume.subtitle && hasContentsList(volume.subtitle) && !queries.some(hasContentsList))
+    return true;
+  return false;
+}
+
 export interface GbResolveInput {
   isbn?: string | null;
   title: string;
@@ -436,6 +484,7 @@ export class GoogleBooksResolver {
       .filter(Boolean)
       .join(' ');
     if (!gbResolveTitleMatches(queryTitle, resolvedTitle || undefined)) return null;
+    if (gbIsOmnibusVolume(vol.volumeInfo ?? {}, queryTitle, input.title)) return null;
     if (input.author && (vol.volumeInfo?.authors?.length ?? 0) > 0) {
       if (!gbAuthorsMatch(input.author, vol.volumeInfo?.authors ?? [])) return null;
     }
