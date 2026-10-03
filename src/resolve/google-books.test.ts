@@ -346,17 +346,32 @@ describe('gbIsOmnibusVolume (bundle-resolve guard, 2026-10-03)', () => {
   it('rejects a bundle whose subtitle lists the queried work, and a contents-list compilation', () => {
     const bundle = {
       title: 'The Odd Thomas Series 7-Book Bundle',
-      subtitle: 'Odd Thomas, Forever Odd, Brother Odd, Odd Hours, Odd Apocalypse, Odd Interlude, Deeply Odd',
+      subtitle:
+        'Odd Thomas, Forever Odd, Brother Odd, Odd Hours, Odd Apocalypse, Odd Interlude, Deeply Odd',
     };
     // Coverage alone passes it (the subtitle carries both query tokens) - the omnibus guard is the stop.
-    expect(gbResolveTitleMatches('Odd Interlude #1', `${bundle.title} ${bundle.subtitle}`)).toBe(true);
+    expect(gbResolveTitleMatches('Odd Interlude #1', `${bundle.title} ${bundle.subtitle}`)).toBe(
+      true,
+    );
     expect(gbIsOmnibusVolume(bundle, 'Odd Interlude #1')).toBe(true);
-    expect(gbIsOmnibusVolume({ title: 'Dean Koontz', subtitle: 'Winter Moon; Icebound' }, 'Winter Moon')).toBe(true);
+    expect(
+      gbIsOmnibusVolume({ title: 'Dean Koontz', subtitle: 'Winter Moon; Icebound' }, 'Winter Moon'),
+    ).toBe(true);
   });
 
   it('allows a set when the query asks for one, and ordinary works', () => {
-    expect(gbIsOmnibusVolume({ title: 'The Dark Artifices, the Complete Collection' }, 'The Dark Artifices, the Complete Collection')).toBe(false);
-    expect(gbIsOmnibusVolume({ title: 'Hooked', subtitle: 'How to Build Habit-Forming Products' }, 'Hooked')).toBe(false);
+    expect(
+      gbIsOmnibusVolume(
+        { title: 'The Dark Artifices, the Complete Collection' },
+        'The Dark Artifices, the Complete Collection',
+      ),
+    ).toBe(false);
+    expect(
+      gbIsOmnibusVolume(
+        { title: 'Hooked', subtitle: 'How to Build Habit-Forming Products' },
+        'Hooked',
+      ),
+    ).toBe(false);
     expect(gbIsOmnibusVolume({ title: 'Odd Interlude' }, 'Odd Interlude #1')).toBe(false);
   });
 
@@ -365,7 +380,8 @@ describe('gbIsOmnibusVolume (bundle-resolve guard, 2026-10-03)', () => {
       id: 'VOL_BUNDLE',
       volumeInfo: {
         title: 'The Odd Thomas Series 7-Book Bundle',
-        subtitle: 'Odd Thomas, Forever Odd, Brother Odd, Odd Hours, Odd Apocalypse, Odd Interlude, Deeply Odd',
+        subtitle:
+          'Odd Thomas, Forever Odd, Brother Odd, Odd Hours, Odd Apocalypse, Odd Interlude, Deeply Odd',
         authors: ['Dean Koontz'],
       },
     };
@@ -375,6 +391,8 @@ describe('gbIsOmnibusVolume (bundle-resolve guard, 2026-10-03)', () => {
     });
     const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
     expect(await r.resolveVolume({ title: 'Odd Interlude #1', author: 'Dean Koontz' })).toBeNull();
-    expect((await r.resolveVolume({ isbn: '9780804180733', title: 'x' }))?.volumeId).toBe('VOL_BUNDLE');
+    expect((await r.resolveVolume({ isbn: '9780804180733', title: 'x' }))?.volumeId).toBe(
+      'VOL_BUNDLE',
+    );
   });
 });
