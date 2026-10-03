@@ -4,6 +4,7 @@ import {
   gbQueryTitle,
   gbAuthorsMatch,
   gbResolveTitleMatches,
+  gbIsOmnibusVolume,
   isDailyQuotaExhausted,
   parseGbError,
   GoogleBooksResolver,
@@ -338,5 +339,42 @@ describe('GoogleBooksResolver non-200 honesty', () => {
     const out = await r.resolveVolume({ isbn: '9780316129084', title: 'Leviathan Wakes' });
     expect(out).toEqual({ volumeId: 'VOL_HEAL', isbn13: '9780316129084', via: 'isbn' });
     expect(call).toBe(2);
+  });
+});
+
+describe('gbIsOmnibusVolume (bundle-resolve guard, 2026-10-03)', () => {
+  it('rejects a bundle whose subtitle lists the queried work, and a contents-list compilation', () => {
+    const bundle = {
+      title: 'The Odd Thomas Series 7-Book Bundle',
+      subtitle: 'Odd Thomas, Forever Odd, Brother Odd, Odd Hours, Odd Apocalypse, Odd Interlude, Deeply Odd',
+    };
+    // Coverage alone passes it (the subtitle carries both query tokens) - the omnibus guard is the stop.
+    expect(gbResolveTitleMatches('Odd Interlude #1', `${bundle.title} ${bundle.subtitle}`)).toBe(true);
+    expect(gbIsOmnibusVolume(bundle, 'Odd Interlude #1')).toBe(true);
+    expect(gbIsOmnibusVolume({ title: 'Dean Koontz', subtitle: 'Winter Moon; Icebound' }, 'Winter Moon')).toBe(true);
+  });
+
+  it('allows a set when the query asks for one, and ordinary works', () => {
+    expect(gbIsOmnibusVolume({ title: 'The Dark Artifices, the Complete Collection' }, 'The Dark Artifices, the Complete Collection')).toBe(false);
+    expect(gbIsOmnibusVolume({ title: 'Hooked', subtitle: 'How to Build Habit-Forming Products' }, 'Hooked')).toBe(false);
+    expect(gbIsOmnibusVolume({ title: 'Odd Interlude' }, 'Odd Interlude #1')).toBe(false);
+  });
+
+  it('resolveVolume returns null for a bundle on the title leg but keeps an exact ISBN hit', async () => {
+    const bundle = {
+      id: 'VOL_BUNDLE',
+      volumeInfo: {
+        title: 'The Odd Thomas Series 7-Book Bundle',
+        subtitle: 'Odd Thomas, Forever Odd, Brother Odd, Odd Hours, Odd Apocalypse, Odd Interlude, Deeply Odd',
+        authors: ['Dean Koontz'],
+      },
+    };
+    const { fetchImpl } = fakeFetch({
+      'intitle:Odd Interlude #1+inauthor:Dean Koontz': [bundle],
+      'isbn:9780804180733': [bundle],
+    });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    expect(await r.resolveVolume({ title: 'Odd Interlude #1', author: 'Dean Koontz' })).toBeNull();
+    expect((await r.resolveVolume({ isbn: '9780804180733', title: 'x' }))?.volumeId).toBe('VOL_BUNDLE');
   });
 });

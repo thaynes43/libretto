@@ -107,6 +107,37 @@ export function gbResolveTitleMatches(
   return covered >= Math.max(1, Math.ceil(q.length * 0.6));
 }
 
+/**
+ * OMNIBUS guard — is this resolved volume a bundle / box set / multi-work compilation the QUERY did not
+ * ask for? The coverage guard above compares against `title + subtitle`, and an omnibus lists its contents
+ * in the subtitle ("The Odd Thomas Series 7-Book Bundle: Odd Thomas, Forever Odd, ..., Odd Interlude, ..."),
+ * so a lookup for ONE member of a set covers its tokens and resolves to the whole bundle. Live 2026-10-03:
+ * the Odd Thomas collection's missing "Odd Interlude #1/#2" resolved to the 7- and 8-book bundles and the
+ * acquisition leg added them to LazyLibrarian. Two signals, either rejects:
+ *   - a packaging marker in the volume's title/subtitle (bundle, omnibus, box/boxed set, collection,
+ *     trilogy, compendium, starter pack, "N-Book"), or
+ *   - a contents-list subtitle (a `;`, or four-plus comma-separated parts),
+ * unless the QUERY itself carries the same signal (a wanted "Complete Collection" boxed set must still
+ * resolve to one). Title leg only — an exact ISBN hit is never second-guessed. Null is an honest gap.
+ */
+const OMNIBUS_MARKER =
+  /\b(bundle|omnibus|box(?:ed)? ?set|collection|trilogy|compendium|starter pack|\d+[- ]books?|(?:two|three|four|five|six|seven|eight|nine|ten)[- ]books?)\b/i;
+
+function hasContentsList(text: string): boolean {
+  return text.includes(';') || text.split(',').length >= 4;
+}
+
+export function gbIsOmnibusVolume(
+  volume: { title?: string | undefined; subtitle?: string | undefined },
+  ...queryTitles: ReadonlyArray<string>
+): boolean {
+  const query = queryTitles.join(' ');
+  const volumeText = [volume.title, volume.subtitle].filter(Boolean).join(' ');
+  if (OMNIBUS_MARKER.test(volumeText) && !OMNIBUS_MARKER.test(query)) return true;
+  if (volume.subtitle && hasContentsList(volume.subtitle) && !hasContentsList(query)) return true;
+  return false;
+}
+
 export interface GbResolveInput {
   isbn?: string | null;
   title: string;
@@ -436,6 +467,7 @@ export class GoogleBooksResolver {
       .filter(Boolean)
       .join(' ');
     if (!gbResolveTitleMatches(queryTitle, resolvedTitle || undefined)) return null;
+    if (gbIsOmnibusVolume(vol.volumeInfo ?? {}, queryTitle, input.title)) return null;
     if (input.author && (vol.volumeInfo?.authors?.length ?? 0) > 0) {
       if (!gbAuthorsMatch(input.author, vol.volumeInfo?.authors ?? [])) return null;
     }
