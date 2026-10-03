@@ -375,6 +375,30 @@ describe('gbIsOmnibusVolume (bundle-resolve guard, 2026-10-03)', () => {
     expect(gbIsOmnibusVolume({ title: 'Odd Interlude' }, 'Odd Interlude #1')).toBe(false);
   });
 
+  it('keeps ordinary single books whose subtitle carries series positioning, and a comma-heavy query', () => {
+    expect(
+      gbIsOmnibusVolume(
+        { title: 'Shadow and Bone', subtitle: 'The Grisha Trilogy, Book 1' },
+        'Shadow and Bone',
+      ),
+    ).toBe(false);
+    expect(
+      gbIsOmnibusVolume(
+        { title: 'Night Shift', subtitle: 'A Collection of Stories' },
+        'Night Shift',
+      ),
+    ).toBe(false);
+    // Two commas in the query must not double into a fake contents list (the query is tested per title).
+    expect(
+      gbIsOmnibusVolume(
+        { title: 'Eat, Pray, Love', subtitle: 'Eat, Pray, Love; Committed' },
+        'Eat, Pray, Love',
+        'Eat, Pray, Love',
+      ),
+    ).toBe(true);
+    expect(gbIsOmnibusVolume({ title: 'The Silo Series Collection' }, 'Wool')).toBe(true);
+  });
+
   it('resolveVolume returns null for a bundle on the title leg but keeps an exact ISBN hit', async () => {
     const bundle = {
       id: 'VOL_BUNDLE',
