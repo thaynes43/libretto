@@ -399,6 +399,16 @@ describe('gbIsOmnibusVolume (bundle-resolve guard, 2026-10-03)', () => {
     expect(gbIsOmnibusVolume({ title: 'The Silo Series Collection' }, 'Wool')).toBe(true);
   });
 
+  it('a raw query with a series-suffix parenthetical is not a request for a set', () => {
+    const boxed = {
+      title: 'The Grisha Trilogy Box Set',
+      subtitle: 'Shadow and Bone, Siege and Storm, Ruin and Rising',
+    };
+    expect(
+      gbIsOmnibusVolume(boxed, 'Shadow and Bone (The Grisha Trilogy, #1)', 'Shadow and Bone'),
+    ).toBe(true);
+  });
+
   it('resolveVolume returns null for a bundle on the title leg but keeps an exact ISBN hit', async () => {
     const bundle = {
       id: 'VOL_BUNDLE',
