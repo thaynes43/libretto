@@ -139,7 +139,10 @@ export function gbIsOmnibusVolume(
 ): boolean {
   // The query side is tested PER title (callers pass the raw and the de-noised title, usually the same text
   // twice) - joining them would double the commas and fake a contents list.
-  const queryAsksForSet = queryTitles.some(anyMarker);
+  // De-noised first (gbQueryTitle drops a trailing series parenthetical): "Shadow and Bone (The Grisha Trilogy, #1)"
+  // is a request for ONE book, not for a trilogy.
+  const queries = queryTitles.map(gbQueryTitle);
+  const queryAsksForSet = queries.some(anyMarker);
   const volumeText = [volume.title, volume.subtitle].filter(Boolean).join(' ');
   if (
     !queryAsksForSet &&
@@ -147,7 +150,7 @@ export function gbIsOmnibusVolume(
   ) {
     return true;
   }
-  if (volume.subtitle && hasContentsList(volume.subtitle) && !queryTitles.some(hasContentsList))
+  if (volume.subtitle && hasContentsList(volume.subtitle) && !queries.some(hasContentsList))
     return true;
   return false;
 }
