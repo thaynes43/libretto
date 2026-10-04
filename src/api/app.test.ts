@@ -294,6 +294,112 @@ describe('API', () => {
       ]);
     });
 
+    describe('compilation editions (libretto#18)', () => {
+      // A hardcover_series source whose list is `works`, against the seeded Book 1..5 library.
+      async function missingFor(
+        recipeId: string,
+        builder: Record<string, unknown>,
+        works: { title: string; isbn: string }[],
+      ) {
+        const tmp = await makeTempDir();
+        const config = loadConfig({
+          CONFIG_DIR: tmp.dir,
+          LIBRETTO_API_KEY: KEY,
+        } as NodeJS.ProcessEnv);
+        const recipeStore = new RecipeStore(config.recipesDir);
+        const runStore = new RunStore(config.runsFile);
+        const targets = registryFor(makeSeededTarget());
+        const builders = {
+          hardcoverSeries: {
+            seriesWorks: () =>
+              Promise.resolve(
+                works.map((work) => ({
+                  identifiers: [`isbn:${work.isbn}`],
+                  label: work.title,
+                  title: work.title,
+                })),
+              ),
+          },
+        };
+        const q = new RunQueue({ recipeStore, runStore, targets, builders, log: silentLogger });
+        const s = new Scheduler(recipeStore, q, silentLogger);
+        const testApp = createApp({
+          config,
+          recipeStore,
+          runStore,
+          queue: q,
+          scheduler: s,
+          targets,
+          builders,
+          resolve: undefined,
+          log: silentLogger,
+        });
+        const { id: _id, ...body } = makeRecipe({ id: recipeId, builder } as never);
+        await testApp.request(`/api/recipes/${recipeId}`, {
+          method: 'PUT',
+          headers: jsonHeaders,
+          body: JSON.stringify(body),
+        });
+        const res = await testApp.request(`/api/collections/${recipeId}/missing`, {
+          headers: auth,
+        });
+        s.stop();
+        await tmp.cleanup();
+        return (await res.json()) as {
+          total: number;
+          heldCount: number;
+          missingCount: number;
+          missing: { label: string }[];
+          compilationCount: number;
+          compilations: { label: string; isbn: string | null; compilation: boolean }[];
+        };
+      }
+
+      const series = { type: 'hardcover_series', ref: 'shatter-me' };
+
+      it('a series recipe keeps its box set out of missing[] and flags it', async () => {
+        const payload = await missingFor('shatter-me', series, [
+          { title: 'Book 1', isbn: '1' },
+          { title: 'Book 99', isbn: '99' },
+          { title: 'Shatter Me Series: 1-5', isbn: '9780062372703' },
+        ]);
+        expect(payload.missing.map((m) => m.label)).toEqual(['Book 99']);
+        expect(payload.missingCount).toBe(1);
+        expect(payload.heldCount).toBe(1);
+        expect(payload.total).toBe(3);
+        expect(payload.compilationCount).toBe(1);
+        expect(payload.compilations).toMatchObject([
+          { label: 'Shatter Me Series: 1-5', isbn: '9780062372703', compilation: true },
+        ]);
+      });
+
+      it('a series recipe that is ONLY a box set keeps it missing', async () => {
+        const payload = await missingFor('only-box', series, [
+          { title: 'The Dark Artifices, the Complete Collection', isbn: '9781534488021' },
+        ]);
+        expect(payload.missingCount).toBe(1);
+        expect(payload.compilationCount).toBe(0);
+      });
+
+      it('an unrelated box set in a static_ids list stays missing', async () => {
+        const payload = await missingFor(
+          'mixed',
+          {
+            type: 'static_ids',
+            ref: [
+              { title: 'Book 1', author: 'A. Author' },
+              { title: 'Harry Potter Boxed Set', author: 'B. Author' },
+            ],
+          },
+          [],
+        );
+        expect(payload.missing.map((m) => m.label)).toEqual([
+          'Harry Potter Boxed Set by B. Author',
+        ]);
+        expect(payload.compilationCount).toBe(0);
+      });
+    });
+
     it('404s an unknown recipe id', async () => {
       const res = await app.request('/api/collections/nope/missing', { headers: auth });
       expect(res.status).toBe(404);

@@ -1,4 +1,5 @@
 import type { WorkItem } from '../builders/index.js';
+import { findCompilations } from './compilation.js';
 import { TitleIndex } from '../matching/title.js';
 import type { TargetItem } from '../target/types.js';
 
@@ -32,6 +33,12 @@ export interface MatchResult {
   matchedVia: (('identifier' | 'title' | 'title_author' | 'series') | undefined)[];
   /** The full unmatched works (identities, not just labels) — feeds acquisition + the missing endpoint. */
   missingWorks: WorkItem[];
+  /**
+   * Unmatched works that are compilation editions (box set, omnibus, "Series: 1-5") of individual members
+   * the recipe also lists (libretto#18). Kept OUT of `missingWorks` so neither the missing report nor
+   * acquisition chases a box set of books already held; reported separately and flagged on the wire.
+   */
+  compilationWorks: WorkItem[];
 }
 
 export interface MatchOptions {
@@ -52,6 +59,12 @@ export interface MatchOptions {
    *     is irrelevant (name equality IS the match, always on). Matches flag matchedVia 'series'.
    */
   grain?: 'work' | 'series';
+  /**
+   * The work list is ONE series (a `hardcover_series` recipe), so a packaged compilation in it is a
+   * compilation of its neighbours and is kept out of `missingWorks` (libretto#18). Default false: an
+   * unrelated box set in a mixed list stays an ordinary missing work.
+   */
+  oneSeries?: boolean;
 }
 
 /** Match an ordered work list against a target's library items (work grain by default). */
@@ -79,6 +92,10 @@ export function matchWorks(
   const matchedIds: string[] = [];
   const matchedSeen = new Set<string>();
   const missingWorks: WorkItem[] = [];
+  const compilationWorks: WorkItem[] = [];
+  // Work grain only: a series-grain "work" is a whole series, never a box set of one.
+  const compilations =
+    !seriesGrain && options.oneSeries ? findCompilations(works) : new Set<WorkItem>();
   const matchedVia: (('identifier' | 'title' | 'title_author' | 'series') | undefined)[] = [];
   let matchedByTitle = 0;
 
@@ -109,7 +126,7 @@ export function matchWorks(
     }
 
     if (!item) {
-      missingWorks.push(work);
+      (compilations.has(work) ? compilationWorks : missingWorks).push(work);
       matchedVia.push(undefined);
     } else if (!matchedSeen.has(item.id)) {
       matchedSeen.add(item.id);
@@ -122,7 +139,7 @@ export function matchWorks(
     }
   }
 
-  return { matchedIds, matchedSeen, matchedByTitle, matchedVia, missingWorks };
+  return { matchedIds, matchedSeen, matchedByTitle, matchedVia, missingWorks, compilationWorks };
 }
 
 /** One missing member's identity, enough for a consumer to mint a request row (title/author/ISBN/refs). */
@@ -137,16 +154,19 @@ export interface MissingMember {
   isbn: string | null;
   /** All normalized identifiers (isbn:/asin:/opaque) — the "ll ref" set for acquisition. */
   identifiers: string[];
+  /** Always true when present: this member is a compilation edition (libretto#18). Only set on `compilations[]`. */
+  compilation?: true;
 }
 
 /** Project an unmatched WorkItem to its wire identity for the missing endpoint. */
-export function toMissingMember(work: WorkItem): MissingMember {
+export function toMissingMember(work: WorkItem, compilation = false): MissingMember {
   return {
     label: work.label,
     title: work.title ?? null,
     authors: work.authors ?? [],
     isbn: work.identifiers.find((id) => id.startsWith('isbn:'))?.slice('isbn:'.length) ?? null,
     identifiers: work.identifiers,
+    ...(compilation ? { compilation: true as const } : {}),
   };
 }
 
@@ -169,10 +189,12 @@ export interface PreviewMember {
   position: number | null;
   /** All normalized identifiers (isbn:/asin:/opaque) — the app's held-match keys. */
   identifiers: string[];
+  /** Present (true) only when this member is a compilation edition of other listed members (libretto#18). */
+  compilation?: true;
 }
 
 /** Project a resolved WorkItem to its wire identity for the preview endpoint. */
-export function toPreviewMember(work: WorkItem): PreviewMember {
+export function toPreviewMember(work: WorkItem, compilation = false): PreviewMember {
   return {
     label: work.label,
     title: work.title ?? null,
@@ -180,5 +202,6 @@ export function toPreviewMember(work: WorkItem): PreviewMember {
     isbn: work.identifiers.find((id) => id.startsWith('isbn:'))?.slice('isbn:'.length) ?? null,
     position: work.position ?? null,
     identifiers: work.identifiers,
+    ...(compilation ? { compilation: true as const } : {}),
   };
 }

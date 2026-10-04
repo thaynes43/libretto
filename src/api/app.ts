@@ -24,6 +24,7 @@ import {
   searchBuilder,
   UnknownBuilderError,
 } from '../builders/index.js';
+import { findCompilations, listsOneSeries } from '../core/compilation.js';
 import { matchWorks, toMissingMember, toPreviewMember } from '../core/match.js';
 import type { ResolveBroker } from '../resolve/broker.js';
 
@@ -291,22 +292,27 @@ export function createApp(deps: AppDeps): Hono {
       heldCount?: number;
       missingCount?: number;
       missing?: ReturnType<typeof toMissingMember>[];
+      compilationCount?: number;
+      compilations?: ReturnType<typeof toMissingMember>[];
       error?: string;
     }
     const perTarget: MissingTargetEntry[] = [];
     for (const { server, libraryId } of recipe.targets) {
       try {
         const items = await targets.for(server).listItems(libraryId);
-        const { matchedIds, missingWorks } = matchWorks(works, items, {
+        const { matchedIds, missingWorks, compilationWorks } = matchWorks(works, items, {
           titleFallback: recipe.variables.titleFallback,
           grain,
+          oneSeries: listsOneSeries(recipe.builder),
         });
         perTarget.push({
           server,
           libraryId,
           heldCount: matchedIds.length,
           missingCount: missingWorks.length,
-          missing: missingWorks.map(toMissingMember),
+          missing: missingWorks.map((work) => toMissingMember(work)),
+          compilationCount: compilationWorks.length,
+          compilations: compilationWorks.map((work) => toMissingMember(work, true)),
         });
       } catch (error) {
         const message =
@@ -324,12 +330,16 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({
       recipeId: recipe.id,
       name: recipe.name,
+      // total = every resolved member, compilations included: heldCount + missingCount +
+      // compilationCount (unheld) accounts for it, whichever target is primary.
       total: works.length,
       server: primary.server,
       libraryId: primary.libraryId,
       heldCount: primary.heldCount,
       missingCount: primary.missingCount,
       missing: primary.missing,
+      compilationCount: primary.compilationCount,
+      compilations: primary.compilations,
       targets: perTarget,
     });
   });
@@ -416,11 +426,14 @@ export function createApp(deps: AppDeps): Hono {
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
     }
+    const compilations = listsOneSeries(parsed.data.builder)
+      ? findCompilations(works)
+      : new Set<(typeof works)[number]>();
     return c.json({
       builder: parsed.data.builder,
       total: works.length,
       truncated: works.length > limit,
-      members: works.slice(0, limit).map(toPreviewMember),
+      members: works.slice(0, limit).map((work) => toPreviewMember(work, compilations.has(work))),
     });
   });
 
