@@ -59,6 +59,12 @@ export interface MatchOptions {
    *     is irrelevant (name equality IS the match, always on). Matches flag matchedVia 'series'.
    */
   grain?: 'work' | 'series';
+  /**
+   * The work list is ONE series (a `hardcover_series` recipe), so a packaged compilation in it is a
+   * compilation of its neighbours and is kept out of `missingWorks` (libretto#18). Default false: an
+   * unrelated box set in a mixed list stays an ordinary missing work.
+   */
+  oneSeries?: boolean;
 }
 
 /** Match an ordered work list against a target's library items (work grain by default). */
@@ -88,7 +94,8 @@ export function matchWorks(
   const missingWorks: WorkItem[] = [];
   const compilationWorks: WorkItem[] = [];
   // Work grain only: a series-grain "work" is a whole series, never a box set of one.
-  const compilations = seriesGrain ? new Set<WorkItem>() : findCompilations(works);
+  const compilations =
+    !seriesGrain && options.oneSeries ? findCompilations(works) : new Set<WorkItem>();
   const matchedVia: (('identifier' | 'title' | 'title_author' | 'series') | undefined)[] = [];
   let matchedByTitle = 0;
 

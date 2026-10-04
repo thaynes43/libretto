@@ -12,6 +12,7 @@ import {
 import type { TargetRegistry } from '../target/registry.js';
 import { TargetUnavailableError, type TargetClient } from '../target/types.js';
 import type { Logger } from '../logger.js';
+import { listsOneSeries } from './compilation.js';
 import { matchWorks } from './match.js';
 
 /**
@@ -65,6 +66,7 @@ export async function reconcileTarget(
     {
       titleFallback: recipe.variables.titleFallback,
       grain,
+      oneSeries: listsOneSeries(recipe.builder),
     },
   );
   const missing = missingWorks.map((work) => work.label);

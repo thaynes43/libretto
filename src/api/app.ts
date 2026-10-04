@@ -24,7 +24,7 @@ import {
   searchBuilder,
   UnknownBuilderError,
 } from '../builders/index.js';
-import { findCompilations } from '../core/compilation.js';
+import { findCompilations, listsOneSeries } from '../core/compilation.js';
 import { matchWorks, toMissingMember, toPreviewMember } from '../core/match.js';
 import type { ResolveBroker } from '../resolve/broker.js';
 
@@ -303,6 +303,7 @@ export function createApp(deps: AppDeps): Hono {
         const { matchedIds, missingWorks, compilationWorks } = matchWorks(works, items, {
           titleFallback: recipe.variables.titleFallback,
           grain,
+          oneSeries: listsOneSeries(recipe.builder),
         });
         perTarget.push({
           server,
@@ -329,9 +330,9 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({
       recipeId: recipe.id,
       name: recipe.name,
-      // Unheld compilation editions of listed members are not wanted, so they are not in the total
-      // (libretto#18); a held one stays counted. Without any compilation this equals works.length.
-      total: works.length - (primary.compilationCount ?? 0),
+      // total = every resolved member, compilations included: heldCount + missingCount +
+      // compilationCount (unheld) accounts for it, whichever target is primary.
+      total: works.length,
       server: primary.server,
       libraryId: primary.libraryId,
       heldCount: primary.heldCount,
@@ -425,9 +426,9 @@ export function createApp(deps: AppDeps): Hono {
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
     }
-    const compilations = isSeriesGrain(parsed.data.builder)
-      ? new Set<(typeof works)[number]>()
-      : findCompilations(works);
+    const compilations = listsOneSeries(parsed.data.builder)
+      ? findCompilations(works)
+      : new Set<(typeof works)[number]>();
     return c.json({
       builder: parsed.data.builder,
       total: works.length,
