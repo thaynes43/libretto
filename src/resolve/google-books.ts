@@ -124,7 +124,7 @@ export function gbResolveTitleMatches(
 // STRONG markers name a packaged set wherever they appear (title or subtitle). WEAK markers ("trilogy",
 // "collection") also appear in the subtitle of an ordinary single book ("The Grisha Trilogy, Book 1",
 // "A Collection of Stories"), so they count only in the TITLE.
-const OMNIBUS_STRONG =
+export const OMNIBUS_STRONG =
   /\b(bundle|omnibus|box(?:ed)? ?set|compendium|starter pack|\d+[- ]books?|(?:two|three|four|five|six|seven|eight|nine|ten)[- ]books?)\b/i;
 const OMNIBUS_WEAK = /\b(collection|trilogy)\b/i;
 const anyMarker = (s: string): boolean => OMNIBUS_STRONG.test(s) || OMNIBUS_WEAK.test(s);

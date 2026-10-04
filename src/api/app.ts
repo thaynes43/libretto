@@ -24,6 +24,7 @@ import {
   searchBuilder,
   UnknownBuilderError,
 } from '../builders/index.js';
+import { findCompilations } from '../core/compilation.js';
 import { matchWorks, toMissingMember, toPreviewMember } from '../core/match.js';
 import type { ResolveBroker } from '../resolve/broker.js';
 
@@ -291,13 +292,15 @@ export function createApp(deps: AppDeps): Hono {
       heldCount?: number;
       missingCount?: number;
       missing?: ReturnType<typeof toMissingMember>[];
+      compilationCount?: number;
+      compilations?: ReturnType<typeof toMissingMember>[];
       error?: string;
     }
     const perTarget: MissingTargetEntry[] = [];
     for (const { server, libraryId } of recipe.targets) {
       try {
         const items = await targets.for(server).listItems(libraryId);
-        const { matchedIds, missingWorks } = matchWorks(works, items, {
+        const { matchedIds, missingWorks, compilationWorks } = matchWorks(works, items, {
           titleFallback: recipe.variables.titleFallback,
           grain,
         });
@@ -306,7 +309,9 @@ export function createApp(deps: AppDeps): Hono {
           libraryId,
           heldCount: matchedIds.length,
           missingCount: missingWorks.length,
-          missing: missingWorks.map(toMissingMember),
+          missing: missingWorks.map((work) => toMissingMember(work)),
+          compilationCount: compilationWorks.length,
+          compilations: compilationWorks.map((work) => toMissingMember(work, true)),
         });
       } catch (error) {
         const message =
@@ -324,12 +329,16 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({
       recipeId: recipe.id,
       name: recipe.name,
-      total: works.length,
+      // Unheld compilation editions of listed members are not wanted, so they are not in the total
+      // (libretto#18); a held one stays counted. Without any compilation this equals works.length.
+      total: works.length - (primary.compilationCount ?? 0),
       server: primary.server,
       libraryId: primary.libraryId,
       heldCount: primary.heldCount,
       missingCount: primary.missingCount,
       missing: primary.missing,
+      compilationCount: primary.compilationCount,
+      compilations: primary.compilations,
       targets: perTarget,
     });
   });
@@ -416,11 +425,14 @@ export function createApp(deps: AppDeps): Hono {
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
     }
+    const compilations = isSeriesGrain(parsed.data.builder)
+      ? new Set<(typeof works)[number]>()
+      : findCompilations(works);
     return c.json({
       builder: parsed.data.builder,
       total: works.length,
       truncated: works.length > limit,
-      members: works.slice(0, limit).map(toPreviewMember),
+      members: works.slice(0, limit).map((work) => toPreviewMember(work, compilations.has(work))),
     });
   });
 

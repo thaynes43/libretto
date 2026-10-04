@@ -294,6 +294,60 @@ describe('API', () => {
       ]);
     });
 
+    it('keeps a compilation edition out of missing[] and flags it (libretto#18)', async () => {
+      const entry = (title: string) => ({ title, author: 'A. Author' });
+      const recipe = makeRecipe({
+        id: 'with-box',
+        builder: {
+          type: 'static_ids',
+          ref: [entry('Book 1'), entry('Book 99'), entry('Series Name Series: 1-5')],
+        },
+      });
+      const { id: _id, ...body } = recipe;
+      await app.request('/api/recipes/with-box', {
+        method: 'PUT',
+        headers: jsonHeaders,
+        body: JSON.stringify(body),
+      });
+      const res = await app.request('/api/collections/with-box/missing', { headers: auth });
+      const payload = (await res.json()) as {
+        total: number;
+        heldCount: number;
+        missingCount: number;
+        missing: { label: string }[];
+        compilationCount: number;
+        compilations: { label: string; compilation: boolean }[];
+      };
+      expect(payload.missing.map((m) => m.label)).toEqual(['Book 99 by A. Author']);
+      expect(payload.missingCount).toBe(1);
+      expect(payload.heldCount).toBe(1);
+      expect(payload.total).toBe(2);
+      expect(payload.compilationCount).toBe(1);
+      expect(payload.compilations).toMatchObject([
+        { label: 'Series Name Series: 1-5 by A. Author', compilation: true },
+      ]);
+    });
+
+    it('keeps a box-set-only recipe missing', async () => {
+      const recipe = makeRecipe({
+        id: 'only-box',
+        builder: {
+          type: 'static_ids',
+          ref: [{ title: 'Series Name, the Complete Collection', author: 'A. Author' }],
+        },
+      });
+      const { id: _id, ...body } = recipe;
+      await app.request('/api/recipes/only-box', {
+        method: 'PUT',
+        headers: jsonHeaders,
+        body: JSON.stringify(body),
+      });
+      const res = await app.request('/api/collections/only-box/missing', { headers: auth });
+      const payload = (await res.json()) as { missingCount: number; compilationCount: number };
+      expect(payload.missingCount).toBe(1);
+      expect(payload.compilationCount).toBe(0);
+    });
+
     it('404s an unknown recipe id', async () => {
       const res = await app.request('/api/collections/nope/missing', { headers: auth });
       expect(res.status).toBe(404);

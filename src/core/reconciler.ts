@@ -59,10 +59,14 @@ export async function reconcileTarget(
   // identifier then the D-04 title fallback. Both go through the single shared matcher (core/match.ts)
   // the missing endpoint also uses, so a member counted `missing` here is exactly one it reports.
   const grain = isSeriesGrain(recipe.builder) ? 'series' : 'work';
-  const { matchedIds, matchedSeen, matchedByTitle, missingWorks } = matchWorks(works, items, {
-    titleFallback: recipe.variables.titleFallback,
-    grain,
-  });
+  const { matchedIds, matchedSeen, matchedByTitle, missingWorks, compilationWorks } = matchWorks(
+    works,
+    items,
+    {
+      titleFallback: recipe.variables.titleFallback,
+      grain,
+    },
+  );
   const missing = missingWorks.map((work) => work.label);
   if (matchedByTitle > 0) {
     log.info(
@@ -70,6 +74,13 @@ export async function reconcileTarget(
       grain === 'series'
         ? 'matched by conservative series-name equality'
         : 'matched by conservative title/author fallback (no identifier hit)',
+    );
+  }
+
+  if (compilationWorks.length > 0) {
+    log.info(
+      { recipeId: recipe.id, server, compilations: compilationWorks.map((work) => work.label) },
+      'compilation editions of listed members are not reported missing',
     );
   }
 
