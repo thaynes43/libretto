@@ -481,6 +481,13 @@ describe('the volume guard (a title that names its volume resolves to that volum
     expect(
       volumeNumbersAgree('Mistborn Book One', 'The Well of Ascension: Mistborn Book Two'),
     ).toBe(false);
+    // A series count after "of" is not a volume ("Book 1 of 2" is book 1, not book 2).
+    expect(
+      volumeNumbersAgree(
+        'Court of Thorns and Roses bk 2',
+        'A Court of Thorns and Roses (Book 1 of 2)',
+      ),
+    ).toBe(false);
     // A title that names no volume agrees with anything.
     expect(
       volumeNumbersAgree('A Court of Mist and Fury', 'A Court of Thorns and Roses, Book 2'),
