@@ -107,6 +107,96 @@ export function gbResolveTitleMatches(
   return covered >= Math.max(1, Math.ceil(q.length * 0.6));
 }
 
+// ---------------------------------------------------------------------------------------------------
+// VOLUME guard (https://github.com/thaynes43/haynesnetwork/issues/693, 2026-10-05). The coverage guard above drops numbers and the words "book" / "vol"
+// / "part", so "Court of Thorns and Roses bk 2" covered "A Court of Thorns and Roses" (book 1) at 3 of 4
+// tokens and two pairing wants for book 2 were pinned to book 1's id, then read `landed` from its files.
+// A title that NAMES its volume ("bk 2", "Book 2", "Part Four: Company", "Vol. 3") must resolve to a volume
+// that names the same number.
+// ---------------------------------------------------------------------------------------------------
+
+const WORD_NUMBERS: Readonly<Record<string, number>> = {
+  one: 1,
+  two: 2,
+  three: 3,
+  four: 4,
+  five: 5,
+  six: 6,
+  seven: 7,
+  eight: 8,
+  nine: 9,
+  ten: 10,
+  eleven: 11,
+  twelve: 12,
+  first: 1,
+  second: 2,
+  third: 3,
+  fourth: 4,
+  fifth: 5,
+  sixth: 6,
+  seventh: 7,
+  eighth: 8,
+  ninth: 9,
+  tenth: 10,
+};
+const NUMBER_WORD = `\\d{1,3}|${Object.keys(WORD_NUMBERS).join('|')}`;
+/** A volume marker and its number: "bk 2", "Book Two", "Vol. 3", "Part 4", "No. 5", "#6". */
+const MARKED_NUMBER = new RegExp(
+  `(?:\\b(?:book|bk|vol|volume|part|no|number|nr|tome)\\b\\.?\\s*|#\\s*)(${NUMBER_WORD})\\b`,
+  'gi',
+);
+/** The same, anchored at the start of a subtitle segment ("Part Four: Company"). */
+const LEADING_MARKED_NUMBER = new RegExp(
+  `^\\s*(?:\\b(?:book|bk|vol|volume|part|no|number|nr|tome)\\b\\.?\\s*|#\\s*)(${NUMBER_WORD})\\b`,
+  'i',
+);
+
+const foldTitle = (s: string): string => s.normalize('NFKD').replace(/[̀-ͯ]/g, '').toLowerCase();
+
+const toNumber = (raw: string): number => WORD_NUMBERS[raw.toLowerCase()] ?? Number(raw);
+
+/** A marker number followed by "of" positions the book in a SERIES ("Book Two of the Expanse"), not a volume. */
+const followedByOf = (text: string, end: number): boolean => /^\s+of\b/i.test(text.slice(end));
+
+/**
+ * The volume numbers a WANTED title names for itself: a marked number in its main title ("Court of Thorns and
+ * Roses bk 2" → 2), or at the start of a colon segment ("Beacon 23: Part Four: Company" → 4). The series
+ * decoration is left out: the trailing parenthetical and the leading index prefix (`gbQueryTitle`), and a marker
+ * inside a later segment ("Caliban's War: The Expanse, Book 2") or followed by "of" ("Book Two of the Expanse
+ * series"), because those position the book in its series while the title itself names the work.
+ */
+export function titleVolumeNumbers(title: string): Set<number> {
+  const out = new Set<number>();
+  const segments = foldTitle(gbQueryTitle(title)).split(':');
+  const head = segments[0] ?? '';
+  for (const m of head.matchAll(MARKED_NUMBER)) {
+    if (!followedByOf(head, (m.index ?? 0) + m[0].length)) out.add(toNumber(m[1]!));
+  }
+  for (const segment of segments.slice(1)) {
+    const m = LEADING_MARKED_NUMBER.exec(segment);
+    if (m && !followedByOf(segment, m.index + m[0].length)) out.add(toNumber(m[1]!));
+  }
+  return out;
+}
+
+/**
+ * Does a candidate's text (a Google Books title + subtitle, or a LazyLibrarian book name + subtitle) name the
+ * volume a wanted title names? True when the wanted title names none; when the candidate names one of its
+ * numbers anywhere (marked, or a bare 1-3 digit number: "A Court of Thorns and Roses, Book 2", "Wild Cards II");
+ * or when the wanted volume is 1 and the candidate names no volume at all (a first book is often unnumbered).
+ */
+export function volumeNumbersAgree(wantedTitle: string, candidateText: string): boolean {
+  const wanted = titleVolumeNumbers(wantedTitle);
+  if (wanted.size === 0) return true;
+  const text = foldTitle(candidateText);
+  const marked = new Set<number>();
+  for (const m of text.matchAll(MARKED_NUMBER)) marked.add(toNumber(m[1]!));
+  const named = new Set<number>(marked);
+  for (const w of text.split(/[^a-z0-9]+/)) if (/^\d{1,3}$/.test(w)) named.add(Number(w));
+  if ([...wanted].some((n) => named.has(n))) return true;
+  return [...wanted].every((n) => n === 1) && marked.size === 0;
+}
+
 /**
  * OMNIBUS guard — is this resolved volume a bundle / box set / multi-work compilation the QUERY did not
  * ask for? The coverage guard above compares against `title + subtitle`, and an omnibus lists its contents
@@ -485,6 +575,9 @@ export class GoogleBooksResolver {
       .join(' ');
     if (!gbResolveTitleMatches(queryTitle, resolvedTitle || undefined)) return null;
     if (gbIsOmnibusVolume(vol.volumeInfo ?? {}, queryTitle, input.title)) return null;
+    // Volume guard: a title that names its volume ("Court of Thorns and Roses bk 2") never resolves to a different
+    // or unnumbered volume. Read off the ORIGINAL title, so the pre-colon fallback cannot drop the number.
+    if (!volumeNumbersAgree(input.title, resolvedTitle)) return null;
     if (input.author && (vol.volumeInfo?.authors?.length ?? 0) > 0) {
       if (!gbAuthorsMatch(input.author, vol.volumeInfo?.authors ?? [])) return null;
     }
