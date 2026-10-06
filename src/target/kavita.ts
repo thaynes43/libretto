@@ -23,9 +23,14 @@ import type {
  * - IDENTIFIER SPIKE FINDING: Kavita exposes ISBN per CHAPTER (ChapterDto.isbn),
  *   not per series — SeriesDto/SeriesMetadataDto carry none. The practical path
  *   is GET /api/Series/volumes?seriesId= and collecting every chapter's isbn.
- *   That is an extra call per series, so resolved identifier sets ride the TTL
- *   disk cache keyed by seriesId + the series' page count (content changes move
- *   the page count, which busts the key early). Coverage caveat: Kavita only
+ *   That is an extra call per series (about 3 ms of Kavita time each, measured
+ *   2026-10-06 over 1,829 series), so resolved identifier sets ride the TTL disk
+ *   cache: one entry per series, refetched when the series' fingerprint moves
+ *   (page count, last folder scan, last chapter added) and at least every 12
+ *   hours. A metadata edit made through Kavita's API (a chapter title fixed and
+ *   locked, writers corrected) changes none of the SeriesDto fields, so a scan of
+ *   the series after the edit makes it visible at the next listing, and the TTL
+ *   bounds it to the same day without one (issue #25). Coverage caveat: Kavita only
  *   parses an epub identifier into ISBN when the OPF <dc:identifier> carries
  *   opf:scheme="ISBN" (or an isbn:/urn:isbn: prefix it can validate) — EPUB3
  *   files without the scheme attribute yield NO isbn, so expect honest gaps
@@ -63,7 +68,12 @@ import type {
  */
 
 const SERIES_PAGE_SIZE = 200;
-const ISBN_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/**
+ * How long a series' cached detail is trusted when its fingerprint has not moved (issue #25): a metadata edit
+ * made without a scan reaches the matcher within this. A full refresh of the books library costs about 1,800
+ * volumes calls of about 3 ms each, so twice a day is cheap.
+ */
+const SERIES_DETAIL_TTL_MS = 12 * 60 * 60 * 1000;
 
 interface KavitaLibrary {
   id: number;
@@ -74,6 +84,28 @@ interface KavitaSeries {
   id: number;
   name: string;
   pages: number;
+  /** When Kavita last scanned the series' folder: a library scan that saw it change, or "Scan Series". */
+  lastFolderScanned?: string | null;
+  lastFolderScannedUtc?: string | null;
+  lastChapterAddedUtc?: string | null;
+}
+
+/** A series' detail on disk, with the fingerprint of the series it was read from. */
+interface CachedSeriesDetail {
+  fingerprint: string;
+  detail: KavitaSeriesDetail;
+}
+
+/**
+ * The SeriesDto fields that move when a series' content or files change: its page count, its last folder scan and
+ * its last chapter added. A cached detail is reused only while these match.
+ */
+function seriesFingerprint(series: KavitaSeries): string {
+  return [
+    series.pages,
+    series.lastFolderScannedUtc ?? series.lastFolderScanned ?? '',
+    series.lastChapterAddedUtc ?? '',
+  ].join('|');
 }
 
 interface KavitaVolume {
@@ -252,36 +284,44 @@ export class KavitaTarget implements TargetClient {
 
   private async seriesDetail(series: KavitaSeries): Promise<KavitaSeriesDetail> {
     // ISBNs, book titles and writers all live on chapters (see the header note), so one
-    // volumes call per series feeds all three. Page count in the cache key busts the entry
-    // as soon as the series' content changes; the version busts it when this shape does.
-    const key = `kavita:series-detail:v2:${series.id}:${series.pages}`;
-    return this.cache.getOrSet(key, ISBN_CACHE_TTL_MS, async () => {
-      const volumes = await this.get<KavitaVolume[]>(`/api/Series/volumes?seriesId=${series.id}`);
-      const chapters = volumes.flatMap((volume) => volume.chapters ?? []);
-      return {
-        identifiers: normalizeIdentifiers(chapters.map((chapter) => chapter.isbn)),
-        books: seriesBooks(series.name, chapters),
-        writers: [
-          ...new Set(
-            chapters.flatMap((chapter) =>
-              (chapter.writers ?? [])
-                .map((writer) => writer.name?.trim() ?? '')
-                .filter((name) => name.length > 0),
-            ),
+    // volumes call per series feeds all three. One entry per series (so a new fingerprint
+    // overwrites it rather than leaving the old one behind); the version busts it when this
+    // shape does.
+    const key = `kavita:series-detail:v3:${series.id}`;
+    const fingerprint = seriesFingerprint(series);
+    const cached = await this.cache.get<CachedSeriesDetail>(key);
+    if (cached?.fingerprint === fingerprint) return cached.detail;
+    const detail = await this.fetchSeriesDetail(series);
+    await this.cache.set<CachedSeriesDetail>(key, { fingerprint, detail }, SERIES_DETAIL_TTL_MS);
+    return detail;
+  }
+
+  private async fetchSeriesDetail(series: KavitaSeries): Promise<KavitaSeriesDetail> {
+    const volumes = await this.get<KavitaVolume[]>(`/api/Series/volumes?seriesId=${series.id}`);
+    const chapters = volumes.flatMap((volume) => volume.chapters ?? []);
+    return {
+      identifiers: normalizeIdentifiers(chapters.map((chapter) => chapter.isbn)),
+      books: seriesBooks(series.name, chapters),
+      writers: [
+        ...new Set(
+          chapters.flatMap((chapter) =>
+            (chapter.writers ?? [])
+              .map((writer) => writer.name?.trim() ?? '')
+              .filter((name) => name.length > 0),
           ),
-        ],
-        folders: [
-          ...new Set(
-            chapters.flatMap((chapter) =>
-              (chapter.files ?? [])
-                .map((file) => file.filePath?.trim() ?? '')
-                .filter((filePath) => filePath.includes('/'))
-                .map((filePath) => filePath.slice(0, filePath.lastIndexOf('/'))),
-            ),
+        ),
+      ],
+      folders: [
+        ...new Set(
+          chapters.flatMap((chapter) =>
+            (chapter.files ?? [])
+              .map((file) => file.filePath?.trim() ?? '')
+              .filter((filePath) => filePath.includes('/'))
+              .map((filePath) => filePath.slice(0, filePath.lastIndexOf('/'))),
           ),
-        ],
-      };
-    });
+        ),
+      ],
+    };
   }
 
   // --- collections + reading lists ------------------------------------------
