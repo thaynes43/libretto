@@ -274,6 +274,37 @@ describe('acquireMissing', () => {
       expect(ll.calls.filter((c) => c.cmd === 'queueBook' || c.cmd === 'searchBook')).toEqual([]);
     });
 
+    it('once the member’s own book is added beside another author’s, the title finds it (no re-add loop)', async () => {
+      const ll = new FakeLazyLibrarian([
+        llBook({
+          bookId: 'vkDiAAAAMAAJ',
+          title: 'The Gray Dawn',
+          author: 'Stewart Edward White',
+          ebookStatus: 'Open',
+        }),
+        // The row the first run added: no ISBN that matches a Hardcover edition.
+        llBook({
+          bookId: 'GkU_EQAAQBAJ',
+          title: 'Gray Dawn',
+          author: 'Walter Mosley',
+          ebookStatus: 'Skipped',
+        }),
+      ]);
+      const resolve = { resolve: vi.fn() };
+      const counts = await acquireMissing(
+        'r',
+        [grayDawn],
+        'ebook',
+        ctxFor(ll, { resolve }),
+        silentLogger,
+      );
+      expect(counts.queued).toBe(1);
+      expect(ll.calls.filter((c) => c.cmd === 'queueBook').map((c) => c.id)).toEqual([
+        'GkU_EQAAQBAJ',
+      ]);
+      expect(resolve.resolve).not.toHaveBeenCalled();
+    });
+
     it('the resolve gets the first credit only (one inauthor: query)', async () => {
       const ll = new FakeLazyLibrarian([]);
       const resolve = {

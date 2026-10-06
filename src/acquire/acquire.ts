@@ -2,7 +2,7 @@ import { workAuthors, type WorkItem } from '../builders/index.js';
 import type { AppConfig } from '../config.js';
 import { normalizeIdentifier } from '../identifiers.js';
 import type { Logger } from '../logger.js';
-import { authorsAgree, TitleIndex } from '../matching/title.js';
+import { authorsAgree, normalizeTitle } from '../matching/title.js';
 import { createResolveBroker, type ResolveBroker } from '../resolve/broker.js';
 import {
   createLazyLibrarianClient,
@@ -147,8 +147,13 @@ export async function acquireMissing(
     const key = normalizeIdentifier(book.isbn);
     if (!byIsbn.has(key)) byIsbn.set(key, book);
   }
-  const byId = new Map(books.map((book) => [book.bookId, book] as const));
-  const titleIndex = new TitleIndex(books.map((book) => ({ id: book.bookId, title: book.title })));
+  // The conservative title fallback over LazyLibrarian's rows, keyed like the D-04 index (noise-stripped exact title).
+  const byTitle = new Map<string, LlBook[]>();
+  for (const book of books) {
+    const key = normalizeTitle(book.title);
+    if (key.length === 0) continue;
+    byTitle.set(key, [...(byTitle.get(key) ?? []), book]);
+  }
   const claimed = new Set<string>();
 
   const sleep = ctx.sleep ?? defaultSleep;
@@ -166,16 +171,26 @@ export async function acquireMissing(
       }
     }
     if (!book) {
-      // The title index sees titles only, so two LazyLibrarian rows under one title stay ambiguous and are refused.
-      // LazyLibrarian's author then vetoes the one it found: "Gray Dawn" (Walter Mosley) never drives Stewart Edward
-      // White's "The Gray Dawn" (thaynes43/haynesnetwork#771). A work or book with no author is judged on its title.
-      const candidate = titleIndex.match(work.title, undefined, claimed);
-      const found = candidate ? byId.get(candidate.id) : undefined;
-      if (found && authorsAgree(workAuthors(work), found.author ? [found.author] : undefined)) {
-        book = found;
-      } else if (found) {
+      // Another author's row under the title is set aside first ("Gray Dawn" by Walter Mosley never drives Stewart
+      // Edward White's "The Gray Dawn", thaynes43/haynesnetwork#771), so once the member's own book is added beside it
+      // the title still finds that one. Of the rows left, exactly one must remain: two are ambiguous and refused, never
+      // guessed. A work or a row with no author is judged on its title alone.
+      const sameTitle = work.title ? (byTitle.get(normalizeTitle(work.title)) ?? []) : [];
+      const authors = workAuthors(work);
+      const candidates = sameTitle.filter((row) =>
+        authorsAgree(authors, row.author ? [row.author] : undefined),
+      );
+      if (candidates.length === 1 && !claimed.has(candidates[0]!.bookId)) {
+        book = candidates[0];
+      } else if (sameTitle.length > candidates.length) {
         log.info(
-          { recipeId, work: work.label, bookId: found.bookId, llAuthor: found.author },
+          {
+            recipeId,
+            work: work.label,
+            otherAuthors: sameTitle
+              .filter((row) => !candidates.includes(row))
+              .map((row) => ({ bookId: row.bookId, author: row.author })),
+          },
           'acquisition: LazyLibrarian holds this title by another author; not driving it',
         );
       }
