@@ -26,6 +26,12 @@ export interface WorkItem {
   /** Author names for the fallback's author guard, when the builder supplies them. */
   authors?: string[];
   /**
+   * The series the work belongs to, when the builder names it (hardcover_series). The title matcher
+   * reads it to recognize a library title decorated with it ("Artificial Condition--The Murderbot
+   * Diaries", "Bridgerton: An Offer from a Gentleman").
+   */
+  series?: string;
+  /**
    * Ordinal position within the source ordering (series position, list rank) when the
    * builder exposes one. Purely for display in the member preview (M4 builder page); the
    * matcher never reads it. Undefined for order-free sources (static_ids).

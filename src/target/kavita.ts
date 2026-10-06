@@ -30,6 +30,15 @@ import type {
  *   opf:scheme="ISBN" (or an isbn:/urn:isbn: prefix it can validate) — EPUB3
  *   files without the scheme attribute yield NO isbn, so expect honest gaps
  *   (those series simply cannot match and recipes report missing[]).
+ * - BOOKS INSIDE A SERIES: the same volumes call carries each chapter's own
+ *   title (`titleName`, the epub's dc:title) and its writers. An epub that
+ *   names its series is filed as a volume of that series, so the series name
+ *   ("Outlander") hides the book ("Written in My Own Heart's Blood", volume 8).
+ *   Items therefore carry `books` (each chapter's title, and "<series>: <title>")
+ *   plus `writers` (the chapters' Writer credits) and `folders` (where the
+ *   chapter files live) beside the series name, cached with the ISBNs under the
+ *   same key. Writers and folders only verify duplicates; they never act as the
+ *   title fallback's author guard (see TargetItem.writers).
  * - MARKER SPIKE FINDING: descriptions ARE API-writable on both container
  *   kinds — collection `summary` via POST /api/Collection/update (full DTO) and
  *   reading-list `summary` via POST /api/ReadingList/update. The provenance
@@ -68,7 +77,22 @@ interface KavitaSeries {
 }
 
 interface KavitaVolume {
-  chapters?: { isbn?: string | null }[];
+  chapters?: {
+    isbn?: string | null;
+    /** The book's own title (the epub's dc:title); empty when the file names none. */
+    titleName?: string | null;
+    /** People credited in the Writer role. */
+    writers?: { name?: string | null }[] | null;
+    files?: { filePath?: string | null }[] | null;
+  }[];
+}
+
+/** What a series' volumes say about it: chapter ISBNs, the books it holds, and their writers. */
+interface KavitaSeriesDetail {
+  identifiers: string[];
+  books: string[][];
+  writers: string[];
+  folders: string[];
 }
 
 interface KavitaCollection {
@@ -186,10 +210,14 @@ export class KavitaTarget implements TargetClient {
     const series = await this.listSeries(libraryId);
     const items: TargetItem[] = [];
     for (const one of series) {
+      const detail = await this.seriesDetail(one);
       items.push({
         id: String(one.id),
         title: one.name,
-        identifiers: await this.seriesIdentifiers(one),
+        identifiers: detail.identifiers,
+        ...(detail.books.length > 0 ? { books: detail.books } : {}),
+        ...(detail.writers.length > 0 ? { writers: detail.writers } : {}),
+        ...(detail.folders.length > 0 ? { folders: detail.folders } : {}),
       });
     }
     this.log.debug({ libraryId, items: items.length }, 'kavita: listed series');
@@ -222,15 +250,37 @@ export class KavitaTarget implements TargetClient {
     return all;
   }
 
-  private async seriesIdentifiers(series: KavitaSeries): Promise<string[]> {
-    // ISBNs live on chapters (see the header note); page count in the cache key
-    // busts the entry as soon as the series' content changes.
-    const key = `kavita:series-isbns:v1:${series.id}:${series.pages}`;
+  private async seriesDetail(series: KavitaSeries): Promise<KavitaSeriesDetail> {
+    // ISBNs, book titles and writers all live on chapters (see the header note), so one
+    // volumes call per series feeds all three. Page count in the cache key busts the entry
+    // as soon as the series' content changes; the version busts it when this shape does.
+    const key = `kavita:series-detail:v2:${series.id}:${series.pages}`;
     return this.cache.getOrSet(key, ISBN_CACHE_TTL_MS, async () => {
       const volumes = await this.get<KavitaVolume[]>(`/api/Series/volumes?seriesId=${series.id}`);
-      return normalizeIdentifiers(
-        volumes.flatMap((volume) => (volume.chapters ?? []).map((chapter) => chapter.isbn)),
-      );
+      const chapters = volumes.flatMap((volume) => volume.chapters ?? []);
+      return {
+        identifiers: normalizeIdentifiers(chapters.map((chapter) => chapter.isbn)),
+        books: seriesBooks(series.name, chapters),
+        writers: [
+          ...new Set(
+            chapters.flatMap((chapter) =>
+              (chapter.writers ?? [])
+                .map((writer) => writer.name?.trim() ?? '')
+                .filter((name) => name.length > 0),
+            ),
+          ),
+        ],
+        folders: [
+          ...new Set(
+            chapters.flatMap((chapter) =>
+              (chapter.files ?? [])
+                .map((file) => file.filePath?.trim() ?? '')
+                .filter((filePath) => filePath.includes('/'))
+                .map((filePath) => filePath.slice(0, filePath.lastIndexOf('/'))),
+            ),
+          ),
+        ],
+      };
     });
   }
 
@@ -491,4 +541,27 @@ function seriesOrder(items: KavitaReadingListItem[]): string[] {
     out.push(seriesId);
   }
   return out;
+}
+
+/**
+ * The books a series holds, one entry per chapter that names its book: the chapter's own title, and the
+ * same title under the series ("Mistborn" + "The Final Empire" => "Mistborn: The Final Empire") when the
+ * two differ. A series whose epubs name no title yields none, and its name stays its only title.
+ */
+export function seriesBooks(
+  seriesName: string,
+  chapters: { titleName?: string | null }[],
+): string[][] {
+  const books: string[][] = [];
+  const series = seriesName.trim();
+  for (const chapter of chapters) {
+    const title = chapter.titleName?.trim() ?? '';
+    if (title.length === 0) continue;
+    books.push(
+      series.length === 0 || series.toLowerCase() === title.toLowerCase()
+        ? [title]
+        : [title, `${series}: ${title}`],
+    );
+  }
+  return books;
 }

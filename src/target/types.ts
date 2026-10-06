@@ -17,6 +17,15 @@ export interface TargetItem {
   id: string;
   title: string;
   /**
+   * The BOOKS this item holds, when it can hold more than one, each as the titles that book is known by (issue
+   * thaynes43/haynesnetwork#759). A Kavita series is a container: an epub that names its series lands as a volume
+   * of it ("Written in My Own Heart's Blood" is volume 8 of the series "Outlander"), so the series name alone hides
+   * the book. Kavita fills this from each chapter's own title, plus "<series>: <title>". The title matcher indexes
+   * these beside `title`, and keeps one claim per book, so several works can each find their own volume of one
+   * series. Undefined (ABS: one item is one book) means `title` is the only name.
+   */
+  books?: string[][];
+  /**
    * Identifiers this item is known by (ISBNs, ASINs, source ids). Opaque strings
    * in M1; matching is exact-string. The identifier chain of D-04 arrives with
    * the real builders.
@@ -25,9 +34,22 @@ export interface TargetItem {
   /**
    * Author names, when the target exposes them, for the conservative D-04 title
    * fallback's author guard. Undefined/empty means the fallback leans on
-   * full-title equality alone (Kavita series carry no author today; ABS does).
+   * full-title equality alone (Kavita series carry no author; ABS does).
    */
   authors?: string[];
+  /**
+   * The people a target credits on the item's files (Kavita: its chapters' Writer
+   * credits). Weaker than `authors` — epub metadata is often partial ("Good Omens"
+   * credits one of its two authors) — so it never vetoes a title match. It only
+   * VERIFIES that two library items with the same title are one book held twice.
+   */
+  writers?: string[];
+  /**
+   * The directories that hold the item's files (Kavita: each chapter file's folder). Like `writers`, it
+   * only verifies duplicates: two items with the same title whose files share a folder are one book in
+   * two formats (an epub and a pdf Kavita filed as two series).
+   */
+  folders?: string[];
 }
 
 export interface TargetCollection {
