@@ -315,6 +315,38 @@ describe('matchWorks — member title aliases (thaynes43/haynesnetwork#777)', ()
     expect(r.matchedVia).toEqual(['title']);
   });
 
+  it('an own title the library carries but refused stays refused: the alias never moves the member', () => {
+    const wedding = work({
+      label: 'On the Way to the Wedding',
+      title: 'On the Way to the Wedding',
+    });
+    const aliases = {
+      'On the Way to the Wedding': ['On the Way to the Wedding with 2nd Epilogue'],
+    };
+    // Two items carry the member's own title (ambiguous, refused).
+    const twice: TargetItem[] = [
+      ...items,
+      { id: 'own1', title: 'On the Way to the Wedding', identifiers: [], authors: ['Julia Quinn'] },
+      {
+        id: 'own2',
+        title: 'On the Way to the Wedding',
+        identifiers: [],
+        authors: ['Someone Else'],
+      },
+    ];
+    expect(
+      matchWorks([wedding], twice, { titleFallback: true, titleAliases: aliases }).missingWorks,
+    ).toEqual([wedding]);
+    // The fallback off: the library carries the own title, so the alias does not stand in for it.
+    const once: TargetItem[] = [
+      ...items,
+      { id: 'own', title: 'On the Way to the Wedding', identifiers: [] },
+    ];
+    expect(
+      matchWorks([wedding], once, { titleFallback: false, titleAliases: aliases }).missingWorks,
+    ).toEqual([wedding]);
+  });
+
   it('an alias keeps every guard: the author veto, ambiguity, and an item another member took', () => {
     const camp = work({
       label: 'Camp Half-Blood Confidential',

@@ -212,11 +212,14 @@ export function matchWorks(
         const own = options.titleFallback
           ? nameIndex.find(work.title, work.authors, claimed)
           : undefined;
-        const alias = own
-          ? undefined
-          : (aliases.get(normalizeTitle(work.title ?? '')) ?? [])
-              .map((title) => nameIndex.find(title, work.authors, claimed))
-              .find((found) => found !== undefined);
+        // An alias only names a book the library does not carry under the member's own title: an own title that was
+        // refused (ambiguous, author-vetoed, claimed) stays refused, fallback on or off.
+        const alias =
+          own || nameIndex.has(work.title)
+            ? undefined
+            : (aliases.get(normalizeTitle(work.title ?? '')) ?? [])
+                .map((title) => nameIndex.find(title, work.authors, claimed))
+                .find((found) => found !== undefined);
         const hit =
           own ??
           alias ??
