@@ -199,9 +199,14 @@ const OTHER_WORK =
   /\b(?:graphic|manga|comic|omnibus|box(?:ed)?\s?set|bundle|collection|anthology|companion|guide|epilogue|prequel|sequel|stories|short|excerpt|sampler|preview|summary|study)\b/i;
 /** "Expanse 03 - Abaddon's Gate", "The Expanse, Book 3 - Abaddon's Gate": a series-position prefix. */
 const POSITION_PREFIX = new RegExp(
-  `^(.*?[a-z].*?)[\\s,]+(?:#\\s*|no\\.?\\s*|book\\s+|bk\\.?\\s*|vol(?:ume)?\\.?\\s*)?(\\d{1,2})(?:\\.\\d+)?\\s+[-\\u2013\\u2014]\\s+(.+)$`,
+  `^(.*?[a-z].*?)[\\s,]+(?:#\\s*|no\\.?\\s*|book\\s+|bk\\.?\\s*|vol(?:ume)?\\.?\\s*)?(\\d{1,2}(?:\\.\\d+)?)\\s+[-\\u2013\\u2014]\\s+(.+)$`,
   'i',
 );
+/**
+ * "Expanse 09 Leviathan Falls", "Aurora Teagarden 08 Poppy Done to Death": a series-position prefix with no dash. Only a
+ * zero-padded number ("09", "02.5") says it is an index rather than part of the title.
+ */
+const PADDED_PREFIX = /^(.*?[a-z].*?)\s+(0\d(?:\.\d+)?)\s+([a-z].*)$/i;
 
 function toNumber(raw: string | undefined): number | undefined {
   if (raw === undefined) return undefined;
@@ -305,7 +310,7 @@ export function coreTitles(
     push(head, volume ?? prefixVolume, prefixVolume === undefined ? found.bare : undefined);
   };
 
-  const prefix = POSITION_PREFIX.exec(raw.trim());
+  const prefix = POSITION_PREFIX.exec(raw.trim()) ?? PADDED_PREFIX.exec(raw.trim());
   if (prefix && prefix[3] !== undefined) {
     const rest = prefix[3];
     const volume = toNumber(prefix[2]);
