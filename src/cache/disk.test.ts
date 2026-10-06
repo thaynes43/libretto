@@ -62,18 +62,31 @@ describe('DiskCache', () => {
     expect(await cache.get('key-2')).toBe('two');
   });
 
-  it('prune removes expired and unreadable entries and keeps fresh ones', async () => {
+  it('prune removes expired and unreadable entries and stale temp files, and keeps fresh ones', async () => {
     let now = 1_000_000;
     const cache = new DiskCache(dir, () => now);
     await cache.set('old', 'value', 500);
     await cache.set('fresh', 'value', 60_000);
     await writeFile(path.join(dir, 'garbage.json'), 'not json', 'utf8');
+    await writeFile(path.join(dir, 'crashed.json.1.ab.tmp'), '{"key"', 'utf8');
     await writeFile(path.join(dir, 'notes.txt'), 'not a cache file', 'utf8');
+    // Everything was written just now: inside the grace window nothing is removed.
     now += 501;
-    expect(await cache.prune()).toBe(2);
-    expect(await cache.get('fresh')).toBe('value');
+    expect(await cache.prune()).toBe(0);
+    // Age every file past the grace window.
     const fs = await import('node:fs/promises');
-    expect((await fs.readdir(dir)).sort()).toHaveLength(2); // fresh + notes.txt
+    const old = new Date(Date.now() - 60 * 60 * 1000);
+    for (const name of await fs.readdir(dir)) await fs.utimes(path.join(dir, name), old, old);
+    expect(await cache.prune()).toBe(3);
+    expect(await cache.get('fresh')).toBe('value');
+    expect(await fs.readdir(dir)).toHaveLength(2); // fresh + notes.txt
+  });
+
+  it('set leaves no temp file behind', async () => {
+    const cache = new DiskCache(dir);
+    await cache.set('key-a', 'value', 60_000);
+    const fs = await import('node:fs/promises');
+    expect((await fs.readdir(dir)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
 
   it('prune of a cache that was never written is a no-op', async () => {

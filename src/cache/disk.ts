@@ -1,6 +1,9 @@
-import { createHash } from 'node:crypto';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+
+/** A cache file written this recently is never pruned (see DiskCache.prune). */
+const PRUNE_GRACE_MS = 10 * 60 * 1000;
 
 /**
  * TTL disk cache (DESIGN-037 D-03/D-04): CONFIG_DIR/cache holds identifier
@@ -34,7 +37,11 @@ export class DiskCache {
   async set<T>(key: string, value: T, ttlMs: number): Promise<void> {
     await mkdir(this.dir, { recursive: true });
     const entry = { key, expiresAt: this.now() + ttlMs, value };
-    await writeFile(this.fileFor(key), JSON.stringify(entry), 'utf8');
+    // Write then rename, so a reader (get, prune) never sees a half-written file.
+    const file = this.fileFor(key);
+    const temp = `${file}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`;
+    await writeFile(temp, JSON.stringify(entry), 'utf8');
+    await rename(temp, file);
   }
 
   async delete(key: string): Promise<void> {
@@ -42,8 +49,11 @@ export class DiskCache {
   }
 
   /**
-   * Delete every expired or unreadable entry. A key that is no longer used (a bumped cache version, a search query
-   * nobody repeats) leaves its file behind; this reclaims them. Returns how many files it removed.
+   * Delete every expired or unreadable entry, and temp files a crashed write left. A key that is no longer used (a
+   * bumped cache version, a search query nobody repeats) leaves its file behind; this reclaims them. A file written in
+   * the last `PRUNE_GRACE_MS` is kept whatever it holds: a run may have just refreshed it while prune was reading it.
+   * At worst prune drops an entry a run refreshed in the instant between that check and the delete, which costs one
+   * refetch. Returns how many files it removed.
    */
   async prune(): Promise<number> {
     let names: string[];
@@ -54,15 +64,24 @@ export class DiskCache {
     }
     let removed = 0;
     for (const name of names) {
-      if (!name.endsWith('.json')) continue;
+      const temp = name.endsWith('.tmp');
+      if (!temp && !name.endsWith('.json')) continue;
       const file = path.join(this.dir, name);
-      let expiresAt: unknown;
-      try {
-        expiresAt = (JSON.parse(await readFile(file, 'utf8')) as { expiresAt?: unknown }).expiresAt;
-      } catch {
-        expiresAt = undefined;
+      let expired = true;
+      if (!temp) {
+        try {
+          const { expiresAt } = JSON.parse(await readFile(file, 'utf8')) as { expiresAt?: unknown };
+          expired = typeof expiresAt !== 'number' || expiresAt <= this.now();
+        } catch {
+          expired = true;
+        }
       }
-      if (typeof expiresAt === 'number' && expiresAt > this.now()) continue;
+      if (!expired) continue;
+      try {
+        if ((await stat(file)).mtimeMs > Date.now() - PRUNE_GRACE_MS) continue;
+      } catch {
+        continue; // already gone
+      }
       await rm(file, { force: true });
       removed += 1;
     }
