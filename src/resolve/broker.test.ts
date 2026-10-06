@@ -78,3 +78,27 @@ describe('resolve broker — additive honesty reason', () => {
     expect(out).toEqual({ resolved: null, reason: 'upstream_error' });
   });
 });
+
+describe('resolve broker — the acquisition language check (issue #26)', () => {
+  const frenchOnly = statusFetch(200, {
+    items: [{ id: 'J_DajwEACAAJ', volumeInfo: { title: 'Troll Bridge', language: 'fr' } }],
+  });
+
+  it('reason "wrong_language" when only a refused edition is found', async () => {
+    const out = await brokerWith(frenchOnly).resolve({
+      isbn: '9782841721399',
+      title: 'Troll Bridge',
+      acceptLanguage: (language) => language === 'en',
+    });
+    expect(out).toEqual({ resolved: null, reason: 'wrong_language' });
+  });
+
+  it('without a check (the /api/resolve service) the same volume resolves', async () => {
+    const out = await brokerWith(frenchOnly).resolve({
+      isbn: '9782841721399',
+      title: 'Troll Bridge',
+    });
+    expect(out.reason).toBe('resolved');
+    expect(out.resolved?.language).toBe('fr');
+  });
+});

@@ -3,6 +3,7 @@ import type { WorkItem } from '../builders/index.js';
 import { silentLogger } from '../testing/fixtures.js';
 import { FakeLazyLibrarian, llBook } from '../testing/ll-stub.js';
 import { acquireMissing, type AcquireContext } from './acquire.js';
+import { languagePolicy } from './language.js';
 
 const ctxFor = (
   client: FakeLazyLibrarian,
@@ -406,5 +407,195 @@ describe('acquireMissing', () => {
       expect(counts.skipped).toBe(1);
       expect(ll.calls).toEqual([]);
     });
+  });
+});
+
+describe('acquireMissing: language and held checks (issue #26)', () => {
+  const english = languagePolicy(['en']);
+  // "Troll Bridge": the Hardcover member carries the French edition's ISBN (2841721396 → 9782841721399).
+  const trollBridge = work({
+    label: 'Troll Bridge',
+    title: 'Troll Bridge',
+    identifiers: ['isbn:9782841721399'],
+    authors: ['Terry Pratchett'],
+  });
+  const dramDeTroll = llBook({
+    bookId: 'J_DajwEACAAJ',
+    title: 'Drame de troll',
+    isbn: '2841721396',
+    author: 'Terry Pratchett',
+    language: 'fr',
+    ebookStatus: 'Skipped',
+    audioStatus: 'Skipped',
+  });
+
+  it('never drives a row in a language not acquired, even on an exact ISBN hit', async () => {
+    const ll = new FakeLazyLibrarian([dramDeTroll]);
+    const counts = await acquireMissing(
+      'discworld',
+      [trollBridge],
+      'ebook',
+      ctxFor(ll, { languages: english }),
+      silentLogger,
+    );
+    // The only ISBN names the French edition, and there is no broker: nothing to add either.
+    expect(counts).toEqual({ queued: 0, added: 0, skipped: 1, errors: 0 });
+    expect(ll.calls).toEqual([]);
+  });
+
+  it('drives the English row the title finds once the French ISBN hit is set aside', async () => {
+    const ll = new FakeLazyLibrarian([
+      dramDeTroll,
+      llBook({
+        bookId: 'EN1',
+        title: 'Troll Bridge',
+        author: 'Terry Pratchett',
+        language: 'en',
+        ebookStatus: 'Skipped',
+      }),
+    ]);
+    const counts = await acquireMissing(
+      'discworld',
+      [trollBridge],
+      'ebook',
+      ctxFor(ll, { languages: english }),
+      silentLogger,
+    );
+    expect(counts.queued).toBe(1);
+    expect(ll.calls.map((c) => c.id)).toEqual(['EN1', 'EN1']);
+  });
+
+  it('sets a same-titled row in another language aside on the title fallback', async () => {
+    const ll = new FakeLazyLibrarian([
+      llBook({ bookId: 'DE1', title: 'Dune', language: 'de', ebookStatus: 'Skipped' }),
+    ]);
+    const counts = await acquireMissing(
+      'r',
+      [work({ label: 'Dune', title: 'Dune' })],
+      'ebook',
+      ctxFor(ll, { languages: english }),
+      silentLogger,
+    );
+    expect(counts.skipped).toBe(1);
+    expect(ll.calls).toEqual([]);
+  });
+
+  it('drives a row whose language is unknown, and one in an English spelling', async () => {
+    const ll = new FakeLazyLibrarian([
+      llBook({ bookId: 'U1', title: 'A', language: 'Unknown', ebookStatus: 'Skipped' }),
+      llBook({ bookId: 'U2', title: 'B', language: null, ebookStatus: 'Skipped' }),
+      llBook({ bookId: 'E1', title: 'C', language: 'en-GB', ebookStatus: 'Skipped' }),
+    ]);
+    const counts = await acquireMissing(
+      'r',
+      ['A', 'B', 'C'].map((title) => work({ label: title, title })),
+      'ebook',
+      ctxFor(ll, { languages: english }),
+      silentLogger,
+    );
+    expect(counts.queued).toBe(3);
+  });
+
+  it('drives any language when no language policy is set', async () => {
+    const ll = new FakeLazyLibrarian([dramDeTroll]);
+    const counts = await acquireMissing('r', [trollBridge], 'ebook', ctxFor(ll), silentLogger);
+    expect(counts.queued).toBe(1);
+  });
+
+  it('hands the broker the check and the identifiers without the other-language ISBN', async () => {
+    const ll = new FakeLazyLibrarian([dramDeTroll]);
+    const resolve = {
+      resolve: vi.fn(() => Promise.resolve({ resolved: null, reason: 'no_match' as const })),
+    };
+    const member = { ...trollBridge, identifiers: ['isbn:9782841721399', 'isbn:9780552154185'] };
+    await acquireMissing(
+      'discworld',
+      [member],
+      'ebook',
+      ctxFor(ll, { languages: english, resolve }),
+      silentLogger,
+    );
+    expect(resolve.resolve).toHaveBeenCalledWith(
+      expect.objectContaining({
+        identifiers: ['isbn:9780552154185'],
+        isbn: '9780552154185',
+        acceptLanguage: expect.any(Function),
+      }),
+    );
+    const [[input]] = resolve.resolve.mock.calls as unknown as [
+      [{ acceptLanguage: (language: string | null) => boolean }],
+    ];
+    expect(input.acceptLanguage('fr')).toBe(false);
+    expect(input.acceptLanguage('en')).toBe(true);
+    // No match: the English ISBN falls back to addBookByISBN as before.
+    expect(ll.calls).toEqual([{ cmd: 'addBookByISBN', isbn: '9780552154185' }]);
+  });
+
+  it('adds nothing when the broker finds only an edition in a language not acquired', async () => {
+    const ll = new FakeLazyLibrarian([]);
+    const resolve = {
+      resolve: vi.fn(() => Promise.resolve({ resolved: null, reason: 'wrong_language' as const })),
+    };
+    const counts = await acquireMissing(
+      'r',
+      [work({ label: 'Dune', title: 'Dune', identifiers: ['isbn:9780441172719'] })],
+      'ebook',
+      ctxFor(ll, { languages: english, resolve }),
+      silentLogger,
+    );
+    expect(counts).toEqual({ queued: 0, added: 0, skipped: 1, errors: 0 });
+    expect(ll.calls).toEqual([]); // no addBookByISBN fallback
+  });
+
+  it('never re-queues a format LazyLibrarian holds a file for while its status reads Skipped', async () => {
+    // "The Last Hero" (YqfWwAEACAAJ): Skipped in both formats, both imported 2026-07-21.
+    const lastHero = llBook({
+      bookId: 'YqfWwAEACAAJ',
+      title: 'The Last Hero',
+      isbn: '0060507772',
+      language: 'en',
+      ebookStatus: 'Skipped',
+      audioStatus: 'Skipped',
+      ebookLibrary: '2026-07-21T19:42:59Z',
+      audioLibrary: '2026-07-21T11:03:00Z',
+    });
+    const member = work({
+      label: 'The Last Hero',
+      title: 'The Last Hero',
+      identifiers: ['isbn:9780060507770'],
+    });
+    for (const format of ['ebook', 'audiobook'] as const) {
+      const ll = new FakeLazyLibrarian([lastHero]);
+      const counts = await acquireMissing(
+        'discworld',
+        [member],
+        format,
+        ctxFor(ll, { languages: english }),
+        silentLogger,
+      );
+      expect(counts).toEqual({ queued: 0, added: 0, skipped: 1, errors: 0 });
+      expect(ll.calls).toEqual([]);
+    }
+  });
+
+  it('still drives the other format when only one is held', async () => {
+    const ll = new FakeLazyLibrarian([
+      llBook({
+        bookId: 'B1',
+        title: 'Dune',
+        ebookStatus: 'Skipped',
+        audioStatus: 'Skipped',
+        ebookLibrary: '2026-07-21T19:42:59Z',
+      }),
+    ]);
+    const counts = await acquireMissing(
+      'r',
+      [work({ label: 'Dune', title: 'Dune' })],
+      'audiobook',
+      ctxFor(ll),
+      silentLogger,
+    );
+    expect(counts.queued).toBe(1);
+    expect(ll.calls.map((c) => c.format)).toEqual(['audiobook', 'audiobook']);
   });
 });

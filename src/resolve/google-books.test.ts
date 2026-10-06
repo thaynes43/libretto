@@ -525,3 +525,85 @@ describe('the volume guard (a title that names its volume resolves to that volum
     expect(res?.volumeId).toBe('E-kdBQAAQBAJ');
   });
 });
+
+describe('GoogleBooksResolver language check (issue #26)', () => {
+  const frenchVol = {
+    id: 'J_DajwEACAAJ',
+    volumeInfo: {
+      title: 'Drame de troll',
+      authors: ['Terry Pratchett'],
+      language: 'fr',
+      industryIdentifiers: [{ type: 'ISBN_13', identifier: '9782841721399' }],
+    },
+  };
+  const englishVol = {
+    id: 'EN_TB',
+    volumeInfo: { title: 'Troll Bridge', authors: ['Terry Pratchett'], language: 'en' },
+  };
+  const englishOnly = (language: string | null) => language === null || language === 'en';
+
+  it('reports the volume language', async () => {
+    const { fetchImpl } = fakeFetch({ 'isbn:9782841721399': [frenchVol] });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    const out = await r.resolveVolume({ isbn: '9782841721399', title: 'Troll Bridge' });
+    expect(out).toEqual({
+      volumeId: 'J_DajwEACAAJ',
+      isbn13: '9782841721399',
+      via: 'isbn',
+      language: 'fr',
+    });
+  });
+
+  it('a refused ISBN hit falls through to the title leg, which finds the English edition', async () => {
+    const { fetchImpl, queries } = fakeFetch({
+      'isbn:9782841721399': [frenchVol],
+      'intitle:Troll Bridge+inauthor:Terry Pratchett': [englishVol],
+    });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    const detail = await r.resolveVolumeDetail({
+      isbn: '9782841721399',
+      title: 'Troll Bridge',
+      author: 'Terry Pratchett',
+      acceptLanguage: englishOnly,
+    });
+    expect(detail.volume).toEqual({
+      volumeId: 'EN_TB',
+      isbn13: null,
+      via: 'title',
+      language: 'en',
+    });
+    expect(queries).toEqual([
+      'isbn:9782841721399',
+      'intitle:Troll Bridge+inauthor:Terry Pratchett',
+    ]);
+  });
+
+  it('resolves nothing, and says why, when every hit is refused', async () => {
+    const { fetchImpl } = fakeFetch({
+      'isbn:9782841721399': [frenchVol],
+      'intitle:Drame de troll+inauthor:Terry Pratchett': [frenchVol],
+    });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    const detail = await r.resolveVolumeDetail({
+      isbn: '9782841721399',
+      title: 'Drame de troll',
+      author: 'Terry Pratchett',
+      acceptLanguage: englishOnly,
+    });
+    expect(detail).toEqual({ volume: null, refused: true, refusedLanguage: 'fr' });
+  });
+
+  it('accepts a volume with no language', async () => {
+    const { fetchImpl } = fakeFetch({
+      'isbn:9780316129084': [vol('VOL_LW', 'Leviathan Wakes', undefined, '9780316129084')],
+    });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    const detail = await r.resolveVolumeDetail({
+      isbn: '9780316129084',
+      title: 'Leviathan Wakes',
+      acceptLanguage: englishOnly,
+    });
+    expect(detail.volume?.volumeId).toBe('VOL_LW');
+    expect(detail.refused).toBe(false);
+  });
+});

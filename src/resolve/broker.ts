@@ -15,6 +15,11 @@ export interface ResolveInput {
   isbn?: string | null | undefined;
   title: string;
   authors?: string[] | undefined;
+  /**
+   * The acquisition language check (issue #26): a volume it refuses is not a match. Absent ⇒ every language is
+   * accepted (the `/api/resolve` service passes none).
+   */
+  acceptLanguage?: ((language: string | null) => boolean) | undefined;
 }
 
 export interface ResolveResult {
@@ -24,6 +29,8 @@ export interface ResolveResult {
   isbn13: string | null;
   /** Which leg resolved it: the reliable ISBN key, or the guarded title fallback. */
   via: 'isbn' | 'title';
+  /** The volume's language as Google Books reports it; absent when it names none. */
+  language?: string;
 }
 
 /**
@@ -32,10 +39,13 @@ export interface ResolveResult {
  *   - `no_match`         — Google Books honestly has no such volume (`200 totalItems:0` / guard reject).
  *   - `quota_exhausted`  — the daily Google Books quota is spent; this was NOT attempted honestly.
  *   - `upstream_error`   — a 5xx / non-quota non-200 / network failure past the retries.
+ *   - `wrong_language`   — the only volumes found are in a language `acceptLanguage` refuses (issue #26). Only a
+ *                          caller that passes `acceptLanguage` (the acquisition leg) can see it.
  * `resolved` stays null for every non-`resolved` reason, so existing consumers (haynesnetwork's wants
  * pass reads `resolved:null` and self-heals hourly) are unaffected; the reason is purely additive.
  */
-export type ResolveReason = 'resolved' | 'no_match' | 'quota_exhausted' | 'upstream_error';
+export type ResolveReason =
+  'resolved' | 'no_match' | 'quota_exhausted' | 'upstream_error' | 'wrong_language';
 
 export interface ResolveOutcome {
   /** The resolved volume, or null for EVERY failure reason (no_match / quota_exhausted / upstream_error). */
@@ -64,7 +74,12 @@ class GoogleBooksBroker implements ResolveBroker {
     const isbn = input.isbn ?? isbnFromIdentifiers(input.identifiers);
     const author = input.authors && input.authors.length > 0 ? input.authors.join(' ') : null;
     try {
-      const vol = await this.resolver.resolveVolume({ isbn, title: input.title, author });
+      const { volume: vol, refused } = await this.resolver.resolveVolumeDetail({
+        isbn,
+        title: input.title,
+        author,
+        ...(input.acceptLanguage ? { acceptLanguage: input.acceptLanguage } : {}),
+      });
       if (vol) {
         this.log.debug(
           { title: input.title, volumeId: vol.volumeId, via: vol.via },
@@ -72,6 +87,8 @@ class GoogleBooksBroker implements ResolveBroker {
         );
         return { resolved: vol, reason: 'resolved' };
       }
+      // Only an edition in a refused language was found: nothing to add, and no ISBN fallback either.
+      if (refused) return { resolved: null, reason: 'wrong_language' };
       // A genuine Google Books no-match (200 totalItems:0 / a guard reject) — honestly nothing to add.
       return { resolved: null, reason: 'no_match' };
     } catch (error) {
