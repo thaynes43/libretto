@@ -2,7 +2,7 @@ import { workAuthors, type WorkItem } from '../builders/index.js';
 import type { AppConfig } from '../config.js';
 import { normalizeIdentifier } from '../identifiers.js';
 import type { Logger } from '../logger.js';
-import { TitleIndex } from '../matching/title.js';
+import { authorsAgree, TitleIndex } from '../matching/title.js';
 import { createResolveBroker, type ResolveBroker } from '../resolve/broker.js';
 import {
   createLazyLibrarianClient,
@@ -148,15 +148,7 @@ export async function acquireMissing(
     if (!byIsbn.has(key)) byIsbn.set(key, book);
   }
   const byId = new Map(books.map((book) => [book.bookId, book] as const));
-  // LazyLibrarian's author guards the title fallback: "Gray Dawn" (Walter Mosley) never drives Stewart Edward White's
-  // "The Gray Dawn" (thaynes43/haynesnetwork#771). A work or book with no author is judged on its title, as before.
-  const titleIndex = new TitleIndex(
-    books.map((book) => ({
-      id: book.bookId,
-      title: book.title,
-      ...(book.author ? { authors: [book.author] } : {}),
-    })),
-  );
+  const titleIndex = new TitleIndex(books.map((book) => ({ id: book.bookId, title: book.title })));
   const claimed = new Set<string>();
 
   const sleep = ctx.sleep ?? defaultSleep;
@@ -174,8 +166,19 @@ export async function acquireMissing(
       }
     }
     if (!book) {
-      const candidate = titleIndex.match(work.title, workAuthors(work), claimed);
-      if (candidate) book = byId.get(candidate.id);
+      // The title index sees titles only, so two LazyLibrarian rows under one title stay ambiguous and are refused.
+      // LazyLibrarian's author then vetoes the one it found: "Gray Dawn" (Walter Mosley) never drives Stewart Edward
+      // White's "The Gray Dawn" (thaynes43/haynesnetwork#771). A work or book with no author is judged on its title.
+      const candidate = titleIndex.match(work.title, undefined, claimed);
+      const found = candidate ? byId.get(candidate.id) : undefined;
+      if (found && authorsAgree(workAuthors(work), found.author ? [found.author] : undefined)) {
+        book = found;
+      } else if (found) {
+        log.info(
+          { recipeId, work: work.label, bookId: found.bookId, llAuthor: found.author },
+          'acquisition: LazyLibrarian holds this title by another author; not driving it',
+        );
+      }
     }
 
     // Decide the action WITHOUT consuming the cap, so resolution-only skips stay free.

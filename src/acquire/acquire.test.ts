@@ -260,6 +260,20 @@ describe('acquireMissing', () => {
       ]);
     });
 
+    it('two LazyLibrarian rows under one title stay ambiguous, even when their authors agree', async () => {
+      const ll = new FakeLazyLibrarian([
+        llBook({
+          bookId: 'A1',
+          title: 'Gray Dawn',
+          author: 'Walter Mosley',
+          ebookStatus: 'Skipped',
+        }),
+        llBook({ bookId: 'B2', title: 'Gray Dawn', author: 'Walter Mosley', ebookStatus: 'Have' }),
+      ]);
+      await acquireMissing('r', [grayDawn], 'ebook', ctxFor(ll), silentLogger);
+      expect(ll.calls.filter((c) => c.cmd === 'queueBook' || c.cmd === 'searchBook')).toEqual([]);
+    });
+
     it('the resolve gets the first credit only (one inauthor: query)', async () => {
       const ll = new FakeLazyLibrarian([]);
       const resolve = {
