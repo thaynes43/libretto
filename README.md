@@ -38,9 +38,22 @@ Identifier matching is the ceiling only when both sides expose scheme'd identifi
 - **Books inside a series.** Kavita files an epub that names its series as a volume of that series, so the series name (_Outlander_) hides the book (_Written in My Own Heart's Blood_, volume 8). Libretto reads each chapter's own title from the same volumes call it makes for ISBNs and also knows the book as "_series_: _title_" (_Mistborn: The Final Empire_). A book title is looked up only when no item carries the work's title as its own, so a work never moves off the item it already matched, and each book of a series is claimed once.
 - **Decoration, not fuzz.** For a title the library carries nowhere, Libretto compares titles with their series decoration taken off: a position prefix (_Expanse 03 - Abaddon's Gate_, _Expanse 02.5 - Gods of Risk_, or zero-padded with no dash: _Expanse 09 Leviathan Falls_), a subtitle that names a volume or the form (_Caliban's War: The Expanse, Book 2_, _Children of Anguish and Anarchy: Legacy of Orisha 3_, _The Lost Metal--A Mistborn Novel_), or the work's own series name (_Bridgerton: An Offer from a Gentleman_). A subtitle that carries the book is never dropped (_Mistborn: The Final Empire_, _The Duke and I: The 2nd Epilogue_), nor one that names another thing (a graphic novel, a companion, an epilogue, a bundle). The volume a decoration names must agree with the work's series position (a list rank is not a volume), a subtitle that names only a volume (_Shadow and Bone: Book 3_, whose head may be the series name) pairs only with a side known to be that same volume, and two members of one list that share a stripped title at different volumes take nothing by it.
 - **Author is a guard applied when both sides supply it** (Audiobookshelf does; Kavita series carry none): disjoint authors veto a title match; when either side has no author the full-title equality stands on its own. Kavita's chapter writers only ever verify duplicates, because epub credits are often partial (_Good Omens_ credits one of its two authors).
-- **Still no fuzz.** A US/UK divergence like _Sorcerer's Stone_ vs _Philosopher's Stone_ stays an honest miss, and so does a library title that differs from the work's in words, not decoration (_The World of Divergent_ for _The World of Divergent: The Path to Allegiant_).
+- **Still no fuzz.** A US/UK divergence like _Sorcerer's Stone_ vs _Philosopher's Stone_ stays an honest miss, and so does a library title that differs from the work's in words, not decoration (_The World of Divergent_ for _The World of Divergent: The Path to Allegiant_). For those, a person can name the pairing once with a member title alias (below).
 
 Title-recovered items are **flagged** in the run: `counts.matchedByTitle` reports how many of `counts.matched` came from the fallback rather than an identifier (and each is logged with `matchedVia: "title"`). The fallback is **default-on**; set `variables.titleFallback: false` on a recipe to pin it to identifier-only matching.
+
+### Member title aliases
+
+Some held books carry a title that differs from the member's in words, and no safe rule pairs them: dropping a subtitle that carries the book is how _Mistborn: Secret History_ would take _Mistborn_. A recipe can name those pairings itself, in the spirit of Kometa's per-collection overrides: `variables.titleAliases` maps a member's title, as the builder lists it, to the other titles a library item carries for that same book.
+
+```yaml
+variables:
+  titleAliases:
+    'The World of Divergent: The Path to Allegiant': ['The World of Divergent']
+    'On the Way to the Wedding': ['On the Way to the Wedding with 2nd Epilogue']
+```
+
+An alias is tried only for a member whose own title the library carries nowhere (an own title that was refused as ambiguous, author-vetoed or already taken stays refused), and before the decoration pass. It is an exact title (the same noise stripping, nothing else, so "The World" never takes "The World of Divergent"), and it keeps every guard: an ambiguous title is refused, disjoint authors veto it, and an item another member took stays taken. Aliases apply even with `titleFallback: false`, since a person confirmed each one, and only at work grain (a comics recipe pairs whole series by name). A match through an alias is counted in `counts.matchedByTitle`. Check the book by hand before writing one: an alias for another volume or edition of a series would hold a book the library does not have.
 
 ## Compilation editions
 
@@ -215,6 +228,7 @@ variables:
   ordered: true # ordered on kavita = reading list; unordered = collection
   acquisitionEnabled: false # M3: hand missing[] to LazyLibrarian to acquire (default false)
   titleFallback: true # D-04: conservative title match when identifiers miss (default true)
+  # titleAliases: { "Member title": ["Library title"] } # optional: member title aliases (see above)
   schedule: '0 5 * * *' # cron expression, or manual for API-only runs
 enabled: true
 ```

@@ -115,6 +115,15 @@ const variablesSchema = z.strictObject({
    * items are flagged in the run counts (matchedByTitle).
    */
   titleFallback: z.boolean().default(true),
+  /**
+   * Member title aliases (DESIGN-037 D-04, in the spirit of Kometa's per-collection overrides): a
+   * member's title, as the builder lists it, mapped to the other titles a library item may carry
+   * for that same book ("The World of Divergent: The Path to Allegiant": ["The World of Divergent"]).
+   * A person confirms each pairing once; the matcher never infers one. An alias is an exact title
+   * (the fallback's noise stripping applies, nothing else), still ambiguity-refusing and
+   * author-guarded. Work grain only. Never alias another volume or edition of a series.
+   */
+  titleAliases: z.record(z.string().min(1), z.array(z.string().min(1)).min(1)).optional(),
   tag: z.string().min(1).optional(),
   schedule: scheduleSchema,
 });

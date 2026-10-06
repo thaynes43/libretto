@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkItem } from '../builders/index.js';
 import type { TargetItem } from '../target/types.js';
-import { matchWorks, toMissingMember } from './match.js';
+import { recipeSchema } from '../recipes/schema.js';
+import { matchWorks, recipeMatchOptions, toMissingMember } from './match.js';
 
 const work = (p: Partial<WorkItem> & { label: string }): WorkItem => ({ identifiers: [], ...p });
 
@@ -246,6 +247,199 @@ describe('matchWorks — held books the library files differently', () => {
       grain: 'series',
     });
     expect(r.missingWorks).toHaveLength(1);
+  });
+});
+
+describe('matchWorks — member title aliases (thaynes43/haynesnetwork#777)', () => {
+  // The live shapes: the library holds each book under a title that differs from the member's in words.
+  const items: TargetItem[] = [
+    { id: 'wod', title: 'The World of Divergent', identifiers: [] },
+    { id: 'wed', title: 'On the Way to the Wedding with 2nd Epilogue', identifiers: [] },
+    {
+      id: 'chb',
+      title:
+        'From Percy Jackson: Camp Half-Blood Confidential: Your Real Guide to the Demigod Training Camp',
+      identifiers: [],
+      authors: ['Rick Riordan'],
+    },
+  ];
+  const wod = work({
+    label: 'The World of Divergent: The Path to Allegiant (#2.5 in Divergent)',
+    title: 'The World of Divergent: The Path to Allegiant',
+    series: 'Divergent',
+    position: 2.5,
+  });
+
+  it('a member is held under the title a person aliased it to, and only then', () => {
+    expect(matchWorks([wod], items, { titleFallback: true }).missingWorks).toEqual([wod]);
+    const r = matchWorks([wod], items, {
+      titleFallback: true,
+      titleAliases: { 'The World of Divergent: The Path to Allegiant': ['The World of Divergent'] },
+    });
+    expect(r.matchedIds).toEqual(['wod']);
+    expect(r.matchedVia).toEqual(['alias']);
+    expect(r.matchedByTitle).toBe(1);
+  });
+
+  it('the alias key is compared like a title: case and punctuation never miss it', () => {
+    const r = matchWorks([wod], items, {
+      titleFallback: true,
+      titleAliases: {
+        'the world of divergent -- the path to allegiant': ['THE WORLD OF DIVERGENT'],
+      },
+    });
+    expect(r.matchedIds).toEqual(['wod']);
+  });
+
+  it('an alias is an exact title, never a prefix: it names the item it was written for', () => {
+    const r = matchWorks([wod], items, {
+      titleFallback: true,
+      titleAliases: { 'The World of Divergent: The Path to Allegiant': ['The World'] },
+    });
+    expect(r.missingWorks).toEqual([wod]);
+  });
+
+  it('a member whose own title is held keeps that item; its alias never moves it', () => {
+    const own: TargetItem = { id: 'own', title: 'On the Way to the Wedding', identifiers: [] };
+    const wedding = work({
+      label: 'On the Way to the Wedding',
+      title: 'On the Way to the Wedding',
+    });
+    const r = matchWorks([wedding], [...items, own], {
+      titleFallback: true,
+      titleAliases: {
+        'On the Way to the Wedding': ['On the Way to the Wedding with 2nd Epilogue'],
+      },
+    });
+    expect(r.matchedIds).toEqual(['own']);
+    expect(r.matchedVia).toEqual(['title']);
+  });
+
+  it('an own title the library carries but refused stays refused: the alias never moves the member', () => {
+    const wedding = work({
+      label: 'On the Way to the Wedding',
+      title: 'On the Way to the Wedding',
+    });
+    const aliases = {
+      'On the Way to the Wedding': ['On the Way to the Wedding with 2nd Epilogue'],
+    };
+    // Two items carry the member's own title (ambiguous, refused).
+    const twice: TargetItem[] = [
+      ...items,
+      { id: 'own1', title: 'On the Way to the Wedding', identifiers: [], authors: ['Julia Quinn'] },
+      {
+        id: 'own2',
+        title: 'On the Way to the Wedding',
+        identifiers: [],
+        authors: ['Someone Else'],
+      },
+    ];
+    expect(
+      matchWorks([wedding], twice, { titleFallback: true, titleAliases: aliases }).missingWorks,
+    ).toEqual([wedding]);
+    // The fallback off: the library carries the own title, so the alias does not stand in for it.
+    const once: TargetItem[] = [
+      ...items,
+      { id: 'own', title: 'On the Way to the Wedding', identifiers: [] },
+    ];
+    expect(
+      matchWorks([wedding], once, { titleFallback: false, titleAliases: aliases }).missingWorks,
+    ).toEqual([wedding]);
+  });
+
+  it('an alias keeps every guard: the author veto, ambiguity, and an item another member took', () => {
+    const camp = work({
+      label: 'Camp Half-Blood Confidential',
+      title: 'Camp Half-Blood Confidential',
+      authors: ['Rick Riordan'],
+    });
+    const aliases = {
+      'Camp Half-Blood Confidential': [
+        'From Percy Jackson: Camp Half-Blood Confidential: Your Real Guide to the Demigod Training Camp',
+      ],
+    };
+    expect(
+      matchWorks([camp], items, { titleFallback: true, titleAliases: aliases }).matchedIds,
+    ).toEqual(['chb']);
+    // Another author's book under the aliased title is vetoed.
+    const other = work({ ...camp, authors: ['Someone Else'] });
+    expect(
+      matchWorks([other], items, { titleFallback: true, titleAliases: aliases }).missingWorks,
+    ).toEqual([other]);
+    // Two items under the aliased title: refused, never guessed.
+    const twice: TargetItem[] = [
+      ...items,
+      { id: 'wod2', title: 'The World of Divergent', identifiers: [], authors: ['Another Writer'] },
+    ];
+    expect(
+      matchWorks([wod], twice, {
+        titleFallback: true,
+        titleAliases: {
+          'The World of Divergent: The Path to Allegiant': ['The World of Divergent'],
+        },
+      }).missingWorks,
+    ).toEqual([wod]);
+    // An item a member earlier in the list took by its own title is not taken again by an alias.
+    const first = work({ label: 'The World of Divergent', title: 'The World of Divergent' });
+    const r = matchWorks([first, wod], items, {
+      titleFallback: true,
+      titleAliases: { 'The World of Divergent: The Path to Allegiant': ['The World of Divergent'] },
+    });
+    expect(r.matchedIds).toEqual(['wod']);
+    expect(r.missingWorks).toEqual([wod]);
+  });
+
+  it('aliases apply with the title fallback off (a person confirmed each), and only aliases do', () => {
+    const r = matchWorks(
+      [wod, work({ label: 'The World of Divergent', title: 'The World of Divergent' })],
+      items,
+      {
+        titleFallback: false,
+        titleAliases: {
+          'The World of Divergent: The Path to Allegiant': ['The World of Divergent'],
+        },
+      },
+    );
+    expect(r.matchedVia).toEqual(['alias', undefined]);
+  });
+
+  it('series grain ignores aliases (a comics recipe pairs whole series by name)', () => {
+    const r = matchWorks(
+      [work({ label: 'Invincible', title: 'Invincible' })],
+      [{ id: 's', title: 'Invincible Universe', identifiers: [] }],
+      {
+        titleFallback: true,
+        grain: 'series',
+        titleAliases: { Invincible: ['Invincible Universe'] },
+      },
+    );
+    expect(r.missingWorks).toHaveLength(1);
+  });
+});
+
+describe('recipeMatchOptions', () => {
+  it('carries the recipe’s fallback, grain, series flag and aliases', () => {
+    const recipe = recipeSchema.parse({
+      id: 'divergent',
+      name: 'Divergent',
+      targets: [{ server: 'kavita', libraryId: '1' }],
+      builder: { type: 'hardcover_series', ref: 'divergent' },
+      variables: {
+        syncMode: 'sync',
+        ordered: true,
+        schedule: 'manual',
+        titleAliases: {
+          'The World of Divergent: The Path to Allegiant': ['The World of Divergent'],
+        },
+      },
+      enabled: true,
+    });
+    expect(recipeMatchOptions(recipe)).toEqual({
+      titleFallback: true,
+      grain: 'work',
+      oneSeries: true,
+      titleAliases: { 'The World of Divergent: The Path to Allegiant': ['The World of Divergent'] },
+    });
   });
 });
 

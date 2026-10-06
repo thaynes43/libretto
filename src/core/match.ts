@@ -1,6 +1,7 @@
 import type { WorkItem } from '../builders/index.js';
-import { findCompilations, isCompilationTitle } from './compilation.js';
+import { findCompilations, isCompilationTitle, listsOneSeries } from './compilation.js';
 import { coreTitles, normalizeTitle, TitleIndex } from '../matching/title.js';
+import { isSeriesGrain, type Recipe } from '../recipes/schema.js';
 import type { TargetItem } from '../target/types.js';
 
 /**
@@ -28,9 +29,10 @@ export interface MatchResult {
    *   - 'title'        — the conservative title fallback, no author on the work to guard with;
    *   - 'title_author' — the title fallback WITH an author guard actively in play (the honest
    *     flag for `{ title, author }` static entries — ADR-076 C-07);
-   *   - 'series'       — series-grain name equality (comics).
+   *   - 'series'       — series-grain name equality (comics);
+   *   - 'alias'        — one of the work's member title aliases (the recipe's `titleAliases`).
    */
-  matchedVia: (('identifier' | 'title' | 'title_author' | 'series') | undefined)[];
+  matchedVia: MatchVia[];
   /** The full unmatched works (identities, not just labels) — feeds acquisition + the missing endpoint. */
   missingWorks: WorkItem[];
   /**
@@ -40,6 +42,9 @@ export interface MatchResult {
    */
   compilationWorks: WorkItem[];
 }
+
+/** How a work found its item (undefined = unmatched). */
+export type MatchVia = 'identifier' | 'title' | 'title_author' | 'series' | 'alias' | undefined;
 
 export interface MatchOptions {
   /**
@@ -65,6 +70,36 @@ export interface MatchOptions {
    * unrelated box set in a mixed list stays an ordinary missing work.
    */
   oneSeries?: boolean;
+  /**
+   * Member title aliases (the recipe's `variables.titleAliases`, DESIGN-037 D-04): a member's title mapped to the
+   * other titles a library item may carry for that same book. Tried after the work's own exact title and before the
+   * decorated pass, each as an exact (noise-stripped) title through the same ambiguity, author and claim guards.
+   * Work grain only; applies whether or not `titleFallback` is on, since a person confirmed each one.
+   */
+  titleAliases?: Readonly<Record<string, readonly string[]>> | undefined;
+}
+
+/** The match options a recipe asks for: the one place the reconciler and the missing endpoint read them from. */
+export function recipeMatchOptions(recipe: Recipe): MatchOptions {
+  return {
+    titleFallback: recipe.variables.titleFallback,
+    grain: isSeriesGrain(recipe.builder) ? 'series' : 'work',
+    oneSeries: listsOneSeries(recipe.builder),
+    ...(recipe.variables.titleAliases ? { titleAliases: recipe.variables.titleAliases } : {}),
+  };
+}
+
+/** A recipe's aliases keyed by the member title's comparison key (so punctuation and case never miss one). */
+function aliasIndex(
+  aliases: Readonly<Record<string, readonly string[]>> | undefined,
+): Map<string, readonly string[]> {
+  const index = new Map<string, string[]>();
+  for (const [member, titles] of Object.entries(aliases ?? {})) {
+    const key = normalizeTitle(member);
+    if (key.length === 0) continue;
+    index.set(key, [...(index.get(key) ?? []), ...titles]);
+  }
+  return index;
 }
 
 /**
@@ -83,6 +118,9 @@ export function matchWorks(
 ): MatchResult {
   const grain = options.grain ?? 'work';
   const seriesGrain = grain === 'series';
+  const aliases = seriesGrain
+    ? new Map<string, readonly string[]>()
+    : aliasIndex(options.titleAliases);
 
   const byIdentifier = new Map<string, TargetItem>();
   if (!seriesGrain) {
@@ -96,7 +134,7 @@ export function matchWorks(
   // matching (always on — it is the sole match path there).
   // Series grain matches the series NAME only; book-level titles (TargetItem.books) are a work-grain index.
   const nameIndex =
-    seriesGrain || options.titleFallback
+    seriesGrain || options.titleFallback || aliases.size > 0
       ? new TitleIndex(
           seriesGrain
             ? items.map(({ id, title, authors }) => ({
@@ -147,11 +185,11 @@ export function matchWorks(
   // Work grain only: a series-grain "work" is a whole series, never a box set of one.
   const compilations =
     !seriesGrain && options.oneSeries ? findCompilations(works) : new Set<WorkItem>();
-  const matchedVia: (('identifier' | 'title' | 'title_author' | 'series') | undefined)[] = [];
+  const matchedVia: MatchVia[] = [];
   let matchedByTitle = 0;
 
   for (const work of works) {
-    let via: 'identifier' | 'title' | 'title_author' | 'series' | undefined;
+    let via: MatchVia;
     let item: TargetItem | undefined;
     if (seriesGrain) {
       const hit = nameIndex!.find(work.title, work.authors, claimed);
@@ -168,11 +206,24 @@ export function matchWorks(
         claimed.add(item.id);
         via = 'identifier';
       } else if (nameIndex) {
-        // The exact title first; only a title the library carries nowhere tries the decorated pass, so
-        // an exact key that was refused (ambiguous, author-vetoed, claimed) stays refused.
+        // The exact title first, then the member's aliases (a person confirmed each), and only a title the library
+        // carries nowhere tries the decorated pass, so an exact key that was refused (ambiguous, author-vetoed,
+        // claimed) stays refused.
+        const own = options.titleFallback
+          ? nameIndex.find(work.title, work.authors, claimed)
+          : undefined;
+        // An alias only names a book the library does not carry under the member's own title: an own title that was
+        // refused (ambiguous, author-vetoed, claimed) stays refused, fallback on or off.
+        const alias =
+          own || nameIndex.has(work.title)
+            ? undefined
+            : (aliases.get(normalizeTitle(work.title ?? '')) ?? [])
+                .map((title) => nameIndex.find(title, work.authors, claimed))
+                .find((found) => found !== undefined);
         const hit =
-          nameIndex.find(work.title, work.authors, claimed) ??
-          (nameIndex.has(work.title)
+          own ??
+          alias ??
+          (!options.titleFallback || nameIndex.has(work.title)
             ? undefined
             : nameIndex.findDecorated(
                 {
@@ -189,7 +240,11 @@ export function matchWorks(
           item = items.find((one) => one.id === hit.item.id);
           // Flag an author-guarded title match distinctly (ADR-076 C-07): a work that carries its
           // own author (e.g. a { title, author } static entry) matched via title_author.
-          via = work.authors && work.authors.length > 0 ? 'title_author' : 'title';
+          via = alias
+            ? 'alias'
+            : work.authors && work.authors.length > 0
+              ? 'title_author'
+              : 'title';
         }
       }
     }
@@ -201,7 +256,7 @@ export function matchWorks(
       matchedSeen.add(item.id);
       matchedIds.push(item.id);
       matchedVia.push(via);
-      if (via === 'title' || via === 'title_author' || via === 'series') matchedByTitle += 1;
+      if (via !== 'identifier') matchedByTitle += 1;
     } else {
       // The item is already claimed by an earlier work — this work neither matches nor is missing.
       matchedVia.push(via);

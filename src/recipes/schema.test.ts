@@ -34,6 +34,32 @@ describe('recipeSchema', () => {
     expect(parsed.success).toBe(false);
   });
 
+  it('accepts member title aliases: a member title mapped to one or more library titles', () => {
+    const base = makeRecipe();
+    const recipe = {
+      ...base,
+      variables: {
+        ...base.variables,
+        titleAliases: { 'Rapport: Friendship, Solidarity, Communion, Empathy': ['Rapport'] },
+      },
+    };
+    const parsed = recipeSchema.parse(recipe);
+    expect(parsed.variables.titleAliases).toEqual({
+      'Rapport: Friendship, Solidarity, Communion, Empathy': ['Rapport'],
+    });
+  });
+
+  it.each([
+    ['an empty alias list', { Rapport: [] }],
+    ['an empty alias title', { Rapport: [''] }],
+    ['an empty member title', { '': ['Rapport'] }],
+    ['a bare string in place of a list', { Rapport: 'Rapport' }],
+  ])('rejects %s', (_label, titleAliases) => {
+    const base = makeRecipe();
+    const recipe = { ...base, variables: { ...base.variables, titleAliases } };
+    expect(recipeSchema.safeParse(recipe).success).toBe(false);
+  });
+
   it('accepts a nyt_list builder with a list_name_encoded ref', () => {
     const recipe = { ...makeRecipe(), builder: { type: 'nyt_list', ref: 'hardcover-fiction' } };
     expect(recipeSchema.safeParse(recipe).success).toBe(true);
