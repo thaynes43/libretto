@@ -26,6 +26,13 @@ export interface WorkItem {
   /** Author names for the fallback's author guard, when the builder supplies them. */
   authors?: string[];
   /**
+   * The work's author credits as the source lists them, when the builder reads them but they must not guard the
+   * LIBRARY match (hardcover_series: a library's own author data is too uneven for a new veto there, DESIGN-037 D-04).
+   * They name the member to a consumer (the missing endpoint's `authors`) and guard ACQUISITION, so another author's
+   * book that shares the title is never taken for it (thaynes43/haynesnetwork#771). See `workAuthors`.
+   */
+  credits?: string[];
+  /**
    * The series the work belongs to, when the builder names it (hardcover_series). The title matcher
    * reads it to recognize a library title decorated with it ("Artificial Condition--The Murderbot
    * Diaries", "Bridgerton: An Offer from a Gentleman").
@@ -38,6 +45,15 @@ export interface WorkItem {
    * rank is not), as the decorated-title volume guard. Undefined for order-free sources.
    */
   position?: number;
+}
+
+/**
+ * The authors that name a work outside the library match: its own `authors` (a static `{ title, author }` entry, an
+ * NYT list entry), else the source's `credits`. Undefined when the builder supplied neither.
+ */
+export function workAuthors(work: Pick<WorkItem, 'authors' | 'credits'>): string[] | undefined {
+  if (work.authors && work.authors.length > 0) return work.authors;
+  return work.credits && work.credits.length > 0 ? work.credits : undefined;
 }
 
 /**

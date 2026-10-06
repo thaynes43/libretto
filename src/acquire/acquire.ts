@@ -1,4 +1,4 @@
-import type { WorkItem } from '../builders/index.js';
+import { workAuthors, type WorkItem } from '../builders/index.js';
 import type { AppConfig } from '../config.js';
 import { normalizeIdentifier } from '../identifiers.js';
 import type { Logger } from '../logger.js';
@@ -148,7 +148,15 @@ export async function acquireMissing(
     if (!byIsbn.has(key)) byIsbn.set(key, book);
   }
   const byId = new Map(books.map((book) => [book.bookId, book] as const));
-  const titleIndex = new TitleIndex(books.map((book) => ({ id: book.bookId, title: book.title })));
+  // LazyLibrarian's author guards the title fallback: "Gray Dawn" (Walter Mosley) never drives Stewart Edward White's
+  // "The Gray Dawn" (thaynes43/haynesnetwork#771). A work or book with no author is judged on its title, as before.
+  const titleIndex = new TitleIndex(
+    books.map((book) => ({
+      id: book.bookId,
+      title: book.title,
+      ...(book.author ? { authors: [book.author] } : {}),
+    })),
+  );
   const claimed = new Set<string>();
 
   const sleep = ctx.sleep ?? defaultSleep;
@@ -166,7 +174,7 @@ export async function acquireMissing(
       }
     }
     if (!book) {
-      const candidate = titleIndex.match(work.title, work.authors, claimed);
+      const candidate = titleIndex.match(work.title, workAuthors(work), claimed);
       if (candidate) book = byId.get(candidate.id);
     }
 
@@ -259,7 +267,8 @@ async function addNewBook(
       identifiers: work.identifiers,
       isbn,
       title: work.title ?? work.label,
-      authors: work.authors,
+      // The first credit only: the broker folds its authors into one inauthor: query.
+      authors: workAuthors(work)?.slice(0, 1),
     });
     if (resolved) {
       const ack = await ctx.client.addBook(resolved.volumeId);

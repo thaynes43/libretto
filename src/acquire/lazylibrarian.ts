@@ -47,6 +47,8 @@ export interface LlBook {
   title: string;
   /** Raw BookIsbn (LL stores ISBN-10 or ISBN-13); normalized by the caller for lookup. */
   isbn: string | null;
+  /** LL AuthorName, when LL names one: guards the title fallback against another author's same-titled book. */
+  author?: string;
   /** The EBOOK status string (LL `Status`) — null when LL omits it. */
   ebookStatus: string | null;
   /** The AUDIOBOOK status string (LL `AudioStatus`) — null when LL omits it. */
@@ -174,6 +176,9 @@ export class LazyLibrarianClient implements LazyLibrarianCommands {
         bookId: String(r.BookID),
         title: typeof r.BookName === 'string' ? r.BookName : '',
         isbn: typeof r.BookIsbn === 'string' && r.BookIsbn !== '' ? r.BookIsbn : null,
+        ...(typeof r.AuthorName === 'string' && r.AuthorName.trim() !== ''
+          ? { author: r.AuthorName }
+          : {}),
         ebookStatus: typeof r.Status === 'string' ? r.Status : null,
         audioStatus: typeof r.AudioStatus === 'string' ? r.AudioStatus : null,
       });
