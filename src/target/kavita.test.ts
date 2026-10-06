@@ -43,6 +43,25 @@ describe('KavitaTarget', () => {
       chapterIsbns: [null],
     });
     stub.seedSeries({
+      id: 15,
+      name: 'Outlander',
+      libraryId: 2,
+      pages: 900,
+      chapterIsbns: [null, '9780385344432'],
+      chapters: [
+        {
+          titleName: 'Outlander',
+          writers: ['Diana Gabaldon'],
+          filePath: '/books/Diana Gabaldon/Outlander/Outlander.epub',
+        },
+        {
+          titleName: "Written in My Own Heart's Blood",
+          writers: ['Diana Gabaldon'],
+          filePath: '/books/Diana Gabaldon/Written in My Own Hearts Blood/Written.epub',
+        },
+      ],
+    });
+    stub.seedSeries({
       id: 14,
       name: 'Elsewhere',
       libraryId: 3,
@@ -94,8 +113,24 @@ describe('KavitaTarget', () => {
         { id: '12', title: "Caliban's War", identifiers: ['isbn:9780316129060'] },
         // EPUB3 scheme gap: series listed, honestly unmatched forever.
         { id: '13', title: 'Scheme-less EPUB3', identifiers: [] },
+        // A series that holds two books: each book's own title (and under the series name), the
+        // chapters' writers, and the folders their files live in.
+        {
+          id: '15',
+          title: 'Outlander',
+          identifiers: ['isbn:9780385344432'],
+          books: [
+            ['Outlander'],
+            ["Written in My Own Heart's Blood", "Outlander: Written in My Own Heart's Blood"],
+          ],
+          writers: ['Diana Gabaldon'],
+          folders: [
+            '/books/Diana Gabaldon/Outlander',
+            '/books/Diana Gabaldon/Written in My Own Hearts Blood',
+          ],
+        },
       ]);
-      // 3 matching series at the stub's page cap of 2 = two all-v2 pages.
+      // 4 matching series at the stub's page cap of 2 = two all-v2 pages.
       expect(stub.requests.filter((r) => r.includes('/api/Series/all-v2'))).toHaveLength(2);
     });
 
@@ -103,7 +138,7 @@ describe('KavitaTarget', () => {
       await target.listItems('2');
       const volumeCalls = () => stub.requests.filter((r) => r.includes('/api/Series/volumes'));
       const afterFirst = volumeCalls().length;
-      expect(afterFirst).toBe(3);
+      expect(afterFirst).toBe(4);
 
       await target.listItems('2');
       expect(volumeCalls()).toHaveLength(afterFirst); // all served from disk cache

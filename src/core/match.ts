@@ -1,6 +1,6 @@
 import type { WorkItem } from '../builders/index.js';
-import { findCompilations } from './compilation.js';
-import { TitleIndex } from '../matching/title.js';
+import { findCompilations, isCompilationTitle } from './compilation.js';
+import { coreTitles, normalizeTitle, TitleIndex } from '../matching/title.js';
 import type { TargetItem } from '../target/types.js';
 
 /**
@@ -67,6 +67,14 @@ export interface MatchOptions {
   oneSeries?: boolean;
 }
 
+/**
+ * A work's position as a SERIES volume, for the decorated-title volume guard: only a work that names its series
+ * (a hardcover_series work) has one. An NYT list rank or any other ordering is not a volume.
+ */
+function seriesPosition(work: WorkItem): number | undefined {
+  return work.series === undefined ? undefined : work.position;
+}
+
 /** Match an ordered work list against a target's library items (work grain by default). */
 export function matchWorks(
   works: readonly WorkItem[],
@@ -86,8 +94,51 @@ export function matchWorks(
   }
   // The name index backs both the D-04 title fallback (work grain, opt-out) and series-grain
   // matching (always on — it is the sole match path there).
+  // Series grain matches the series NAME only; book-level titles (TargetItem.books) are a work-grain index.
   const nameIndex =
-    seriesGrain || options.titleFallback ? new TitleIndex(items as TargetItem[]) : undefined;
+    seriesGrain || options.titleFallback
+      ? new TitleIndex(
+          seriesGrain
+            ? items.map(({ id, title, authors }) => ({
+                id,
+                title,
+                ...(authors ? { authors } : {}),
+              }))
+            : items,
+          isCompilationTitle,
+        )
+      : undefined;
+  // The decorated-title pass refuses a key two members share, unless both name the same volume (a source
+  // that lists one book twice). A member's volume is its series position, else the one its title names.
+  const keyOwners = new Map<string, { work: WorkItem; volume: number | undefined }[]>();
+  if (!seriesGrain && nameIndex) {
+    for (const work of works) {
+      if (work.title === undefined) continue;
+      const cores = coreTitles(work.title, work.series, isCompilationTitle);
+      const volume =
+        seriesPosition(work) ?? cores.find((core) => core.volume !== undefined)?.volume;
+      const keys = new Set([normalizeTitle(work.title), ...cores.map((core) => core.key)]);
+      for (const key of keys) {
+        if (key.length === 0) continue;
+        const owners = keyOwners.get(key) ?? [];
+        owners.push({ work, volume });
+        keyOwners.set(key, owners);
+      }
+    }
+  }
+  const sharedKeyFor =
+    (work: WorkItem) =>
+    (key: string): boolean => {
+      const owners = keyOwners.get(key) ?? [];
+      const own = owners.find((owner) => owner.work === work)?.volume;
+      return owners.some(
+        (owner) =>
+          owner.work !== work &&
+          (own === undefined || owner.volume === undefined || owner.volume !== own),
+      );
+    };
+  // What matches have taken: an item's id, or one book of an item that holds several (TitleIndex claims).
+  const claimed = new Set<string>();
 
   const matchedIds: string[] = [];
   const matchedSeen = new Set<string>();
@@ -103,9 +154,10 @@ export function matchWorks(
     let via: 'identifier' | 'title' | 'title_author' | 'series' | undefined;
     let item: TargetItem | undefined;
     if (seriesGrain) {
-      const candidate = nameIndex!.match(work.title, work.authors, matchedSeen);
-      if (candidate) {
-        item = items.find((one) => one.id === candidate.id);
+      const hit = nameIndex!.find(work.title, work.authors, claimed);
+      if (hit) {
+        claimed.add(hit.claim);
+        item = items.find((one) => one.id === hit.item.id);
         via = 'series';
       }
     } else {
@@ -113,11 +165,28 @@ export function matchWorks(
         .map((identifier) => byIdentifier.get(identifier))
         .find((candidate) => candidate !== undefined);
       if (item) {
+        claimed.add(item.id);
         via = 'identifier';
       } else if (nameIndex) {
-        const candidate = nameIndex.match(work.title, work.authors, matchedSeen);
-        if (candidate) {
-          item = items.find((one) => one.id === candidate.id);
+        // The exact title first; only a title the library carries nowhere tries the decorated pass, so
+        // an exact key that was refused (ambiguous, author-vetoed, claimed) stays refused.
+        const hit =
+          nameIndex.find(work.title, work.authors, claimed) ??
+          (nameIndex.has(work.title)
+            ? undefined
+            : nameIndex.findDecorated(
+                {
+                  title: work.title,
+                  authors: work.authors,
+                  position: seriesPosition(work),
+                  series: work.series,
+                },
+                claimed,
+                sharedKeyFor(work),
+              ));
+        if (hit) {
+          claimed.add(hit.claim);
+          item = items.find((one) => one.id === hit.item.id);
           // Flag an author-guarded title match distinctly (ADR-076 C-07): a work that carries its
           // own author (e.g. a { title, author } static entry) matched via title_author.
           via = work.authors && work.authors.length > 0 ? 'title_author' : 'title';

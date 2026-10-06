@@ -20,6 +20,8 @@ export interface KavitaStubSeries {
   pages: number;
   /** Chapter ISBNs, possibly empty/null entries (EPUB3 scheme gaps). */
   chapterIsbns: (string | null)[];
+  /** Per chapter (same order as chapterIsbns): its own title, Writer credits and file path. */
+  chapters?: { titleName?: string; writers?: string[]; filePath?: string }[];
 }
 
 interface KavitaStubCollection {
@@ -102,7 +104,20 @@ export class KavitaStub {
     this.app.get('/api/Series/volumes', (c) => {
       const one = this.series.find((s) => s.id === Number(c.req.query('seriesId')));
       if (!one) return c.json([], 200);
-      return c.json([{ id: one.id * 10, chapters: one.chapterIsbns.map((isbn) => ({ isbn })) }]);
+      return c.json([
+        {
+          id: one.id * 10,
+          chapters: one.chapterIsbns.map((isbn, index) => {
+            const chapter = one.chapters?.[index];
+            return {
+              isbn,
+              titleName: chapter?.titleName ?? '',
+              writers: (chapter?.writers ?? []).map((name) => ({ name })),
+              files: chapter?.filePath ? [{ filePath: chapter.filePath }] : [],
+            };
+          }),
+        },
+      ]);
     });
 
     this.app.get('/api/Series/series-by-collection', (c) => {

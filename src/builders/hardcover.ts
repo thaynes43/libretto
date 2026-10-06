@@ -207,7 +207,8 @@ export class HardcoverSeriesSource {
     // pod otherwise serves pre-change entries for the full TTL (D-04's title
     // fallback matched 0 in production because v1 entries carried no `title`).
     // v3 adds WorkItem.position (series position) for the M4 member preview.
-    const cacheKey = `hardcover:series-works:v3:${ref}`;
+    // v4 adds WorkItem.series (the series name) for the decorated-title match.
+    const cacheKey = `hardcover:series-works:v4:${ref}`;
     const cached = await this.options.cache.get<WorkItem[]>(cacheKey);
     if (cached !== undefined) {
       this.options.log.debug({ ref, works: cached.length }, 'hardcover: series cache hit');
@@ -274,6 +275,7 @@ export class HardcoverSeriesSource {
         // here: the Hardcover GraphQL depth-3 cap already spends its budget on
         // series -> book_series -> book, so contributions would exceed it.
         title: book.title,
+        series: series.name,
         ...(entry.position === null ? {} : { position: entry.position }),
       });
     }

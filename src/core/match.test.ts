@@ -142,6 +142,113 @@ describe('matchWorks — series grain (comics)', () => {
   });
 });
 
+// thaynes43/haynesnetwork#759 — members a library holds that read missing.
+describe('matchWorks — held books the library files differently', () => {
+  it('finds each volume a Kavita series holds, and the series joins the collection once', () => {
+    const items: TargetItem[] = [
+      {
+        id: 'o',
+        title: 'Outlander',
+        identifiers: [],
+        books: [['Outlander'], ['Dragonfly in Amber'], ["Written in My Own Heart's Blood"]],
+      },
+    ];
+    const works = [
+      work({ label: 'Outlander (#1)', title: 'Outlander', position: 1 }),
+      work({ label: 'Dragonfly in Amber (#2)', title: 'Dragonfly in Amber', position: 2 }),
+      work({ label: 'Voyager (#3)', title: 'Voyager', position: 3 }),
+      work({
+        label: "Written in My Own Heart's Blood (#8)",
+        title: "Written in My Own Heart's Blood",
+        position: 8,
+      }),
+    ];
+    const r = matchWorks(works, items, { titleFallback: true });
+    expect(r.missingWorks.map((w) => w.title)).toEqual(['Voyager']);
+    expect(r.matchedIds).toEqual(['o']);
+  });
+
+  it('pairs decorated titles, and a source that lists one book twice holds both entries', () => {
+    const items: TargetItem[] = [
+      { id: 'a', title: 'Expanse 03 - Abaddon’s Gate', identifiers: [] },
+      { id: 'c1', title: "Caliban's War", identifiers: [], authors: ['James S. A. Corey'] },
+      { id: 'c2', title: "Caliban's War", identifiers: [], authors: ['James S.A. Corey'] },
+    ];
+    const works = [
+      work({
+        label: "Caliban's War (#2)",
+        title: "Caliban's War",
+        position: 2,
+        series: 'The Expanse',
+      }),
+      work({
+        label: "Abaddon's Gate (#3)",
+        title: "Abaddon's Gate",
+        position: 3,
+        series: 'The Expanse',
+      }),
+      work({
+        label: "Caliban's War: The Expanse, Book 2 (#?)",
+        title: "Caliban's War: The Expanse, Book 2",
+        series: 'The Expanse',
+      }),
+    ];
+    const r = matchWorks(works, items, { titleFallback: true, oneSeries: true });
+    expect(r.missingWorks).toEqual([]);
+    expect(r.matchedVia).toEqual(['title', 'title', 'title']);
+  });
+
+  it('a list rank is not a volume: only a work that names its series has a position to guard with', () => {
+    const items: TargetItem[] = [
+      { id: 'a', title: 'Expanse 03 - Abaddon’s Gate', identifiers: [] },
+    ];
+    // An NYT-style rank 2 (no series) does not veto volume 3.
+    const ranked = matchWorks(
+      [work({ label: "Abaddon's Gate", title: "Abaddon's Gate", position: 2 })],
+      items,
+      {
+        titleFallback: true,
+      },
+    );
+    expect(ranked.missingWorks).toEqual([]);
+    // A series position 2 does.
+    const series = matchWorks(
+      [
+        work({
+          label: "Abaddon's Gate",
+          title: "Abaddon's Gate",
+          position: 2,
+          series: 'The Expanse',
+        }),
+      ],
+      items,
+      { titleFallback: true },
+    );
+    expect(series.missingWorks).toHaveLength(1);
+  });
+
+  it('two members that share a stripped title at different volumes take nothing by it', () => {
+    const items: TargetItem[] = [{ id: 'x', title: 'Shadows: A Saga Novel', identifiers: [] }];
+    const works = [
+      work({ label: 'Shadows: Book 1', title: 'Shadows: Book 1', position: 1 }),
+      work({ label: 'Shadows: Book 2', title: 'Shadows: Book 2', position: 2 }),
+    ];
+    const r = matchWorks(works, items, { titleFallback: true });
+    expect(r.missingWorks).toHaveLength(2);
+  });
+
+  it('series grain matches the series name only, never a book inside it', () => {
+    const items: TargetItem[] = [
+      { id: 's', title: 'Invincible', identifiers: [], books: [['Family Matters']] },
+    ];
+    const r = matchWorks([work({ label: 'Family Matters', title: 'Family Matters' })], items, {
+      titleFallback: true,
+      grain: 'series',
+    });
+    expect(r.missingWorks).toHaveLength(1);
+  });
+});
+
 describe('toMissingMember', () => {
   it('projects a work to its identity (title/author/isbn/refs)', () => {
     const member = toMissingMember(

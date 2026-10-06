@@ -194,6 +194,8 @@ describe('HardcoverSeriesSource', () => {
       'isbn:9780553418026',
     ]);
     expect(works[1]!.identifiers).toEqual(['isbn:9780316129060']);
+    // The series name rides each work for the decorated-title match.
+    expect(works.map((work) => work.series)).toEqual(['The Expanse', 'The Expanse', 'The Expanse']);
     // A book with no identifier-bearing editions is emitted honestly (it can
     // only ever land in missing[]).
     expect(works[2]!.identifiers).toEqual([]);
