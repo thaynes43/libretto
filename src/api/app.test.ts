@@ -294,6 +294,36 @@ describe('API', () => {
       ]);
     });
 
+    it('a member held under an aliased title is not missing, and the alias round-trips the PUT', async () => {
+      // The seeded library holds "Book 4"; the recipe's { title, author } member is "The Fourth Book".
+      const recipe = makeRecipe({
+        id: 'alias-recipe',
+        builder: {
+          type: 'static_ids',
+          ref: ['isbn:1', { title: 'The Fourth Book', author: 'A. Writer' }],
+        },
+      });
+      const { id: _id, ...body } = recipe;
+      const variables = { ...body.variables, titleAliases: { 'The Fourth Book': ['Book 4'] } };
+      const put = await app.request('/api/recipes/alias-recipe', {
+        method: 'PUT',
+        headers: jsonHeaders,
+        body: JSON.stringify({ ...body, variables }),
+      });
+      expect(put.status).toBe(200);
+      const read = (await (
+        await app.request('/api/recipes/alias-recipe', { headers: auth })
+      ).json()) as {
+        recipe: { variables: { titleAliases?: Record<string, string[]> } };
+      };
+      expect(read.recipe.variables.titleAliases).toEqual({ 'The Fourth Book': ['Book 4'] });
+
+      const res = await app.request('/api/collections/alias-recipe/missing', { headers: auth });
+      const payload = (await res.json()) as { heldCount: number; missingCount: number };
+      expect(payload.heldCount).toBe(2);
+      expect(payload.missingCount).toBe(0);
+    });
+
     describe('compilation editions (libretto#18)', () => {
       // A hardcover_series source whose list is `works`, against the seeded Book 1..5 library.
       async function missingFor(

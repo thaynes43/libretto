@@ -1,7 +1,7 @@
 import { acquireMissing, type AcquireContext } from '../acquire/acquire.js';
 import type { LlFormat } from '../acquire/lazylibrarian.js';
 import { resolveBuilder, type BuilderContext, type WorkItem } from '../builders/index.js';
-import { isSeriesGrain, type Recipe, type Target } from '../recipes/schema.js';
+import { type Recipe, type Target } from '../recipes/schema.js';
 import type { RecipeRunResult } from '../runs/store.js';
 import {
   buildCollectionDescription,
@@ -12,8 +12,7 @@ import {
 import type { TargetRegistry } from '../target/registry.js';
 import { TargetUnavailableError, type TargetClient } from '../target/types.js';
 import type { Logger } from '../logger.js';
-import { listsOneSeries } from './compilation.js';
-import { matchWorks } from './match.js';
+import { matchWorks, recipeMatchOptions } from './match.js';
 
 /**
  * Reconcile a recipe against its targets (DESIGN-037 D-04/D-07/D-08 + ADR-076 multi-target):
@@ -59,15 +58,12 @@ export async function reconcileTarget(
   // series to one target series by conservative NAME equality; work-grain recipes pair each book by
   // identifier then the D-04 title fallback. Both go through the single shared matcher (core/match.ts)
   // the missing endpoint also uses, so a member counted `missing` here is exactly one it reports.
-  const grain = isSeriesGrain(recipe.builder) ? 'series' : 'work';
+  const options = recipeMatchOptions(recipe);
+  const grain = options.grain;
   const { matchedIds, matchedSeen, matchedByTitle, missingWorks, compilationWorks } = matchWorks(
     works,
     items,
-    {
-      titleFallback: recipe.variables.titleFallback,
-      grain,
-      oneSeries: listsOneSeries(recipe.builder),
-    },
+    options,
   );
   const missing = missingWorks.map((work) => work.label);
   if (matchedByTitle > 0) {

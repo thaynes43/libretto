@@ -8,7 +8,6 @@ import type { RunQueue } from '../core/queue.js';
 import type { Logger } from '../logger.js';
 import {
   builderSchema,
-  isSeriesGrain,
   recipeSchema,
   zodIssuesToValidationIssues,
   type ValidationIssue,
@@ -25,7 +24,7 @@ import {
   UnknownBuilderError,
 } from '../builders/index.js';
 import { findCompilations, listsOneSeries } from '../core/compilation.js';
-import { matchWorks, toMissingMember, toPreviewMember } from '../core/match.js';
+import { matchWorks, recipeMatchOptions, toMissingMember, toPreviewMember } from '../core/match.js';
 import type { ResolveBroker } from '../resolve/broker.js';
 
 export interface AppDeps {
@@ -285,7 +284,6 @@ export function createApp(deps: AppDeps): Hono {
     // each entry's missing[] is the works missing FROM that target (kavita => ebook side, abs =>
     // audiobook side). The flat top-level fields mirror the first reachable target — a single-target
     // recipe's whole truth, and back-compat for consumers that predate multi-target.
-    const grain = isSeriesGrain(recipe.builder) ? 'series' : 'work';
     interface MissingTargetEntry {
       server: 'kavita' | 'abs';
       libraryId: string;
@@ -300,11 +298,11 @@ export function createApp(deps: AppDeps): Hono {
     for (const { server, libraryId } of recipe.targets) {
       try {
         const items = await targets.for(server).listItems(libraryId);
-        const { matchedIds, missingWorks, compilationWorks } = matchWorks(works, items, {
-          titleFallback: recipe.variables.titleFallback,
-          grain,
-          oneSeries: listsOneSeries(recipe.builder),
-        });
+        const { matchedIds, missingWorks, compilationWorks } = matchWorks(
+          works,
+          items,
+          recipeMatchOptions(recipe),
+        );
         perTarget.push({
           server,
           libraryId,
