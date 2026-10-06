@@ -198,6 +198,35 @@ describe('matchWorks — held books the library files differently', () => {
     expect(r.matchedVia).toEqual(['title', 'title', 'title']);
   });
 
+  it('a list rank is not a volume: only a work that names its series has a position to guard with', () => {
+    const items: TargetItem[] = [
+      { id: 'a', title: 'Expanse 03 - Abaddon’s Gate', identifiers: [] },
+    ];
+    // An NYT-style rank 2 (no series) does not veto volume 3.
+    const ranked = matchWorks(
+      [work({ label: "Abaddon's Gate", title: "Abaddon's Gate", position: 2 })],
+      items,
+      {
+        titleFallback: true,
+      },
+    );
+    expect(ranked.missingWorks).toEqual([]);
+    // A series position 2 does.
+    const series = matchWorks(
+      [
+        work({
+          label: "Abaddon's Gate",
+          title: "Abaddon's Gate",
+          position: 2,
+          series: 'The Expanse',
+        }),
+      ],
+      items,
+      { titleFallback: true },
+    );
+    expect(series.missingWorks).toHaveLength(1);
+  });
+
   it('two members that share a stripped title at different volumes take nothing by it', () => {
     const items: TargetItem[] = [{ id: 'x', title: 'Shadows: A Saga Novel', identifiers: [] }];
     const works = [

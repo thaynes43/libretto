@@ -130,6 +130,11 @@ interface TitleEntry {
 export interface CoreTitle {
   key: string;
   volume?: number;
+  /**
+   * The decoration named a volume and nothing else ("Shadow and Bone: Book 3"), so what is left may be the
+   * SERIES name rather than this book's title. Such a core pairs only with a side that names the same volume.
+   */
+  bare?: true;
 }
 
 /** Separates a title from its subtitle: a colon, a double hyphen, or a spaced dash. */
@@ -163,8 +168,27 @@ const NUMBER = `(\\d{1,2}|${Object.keys(NUMBER_WORDS).join('|')})`;
 
 /** "Book 2", "Book Two", "Vol. 3", "#4": a subtitle that names a volume. */
 const MARKED_VOLUME = new RegExp(`(?:\\b(?:book|bk|volume|vol)\\.?\\s*|#\\s*)${NUMBER}\\b`, 'i');
-/** "Legacy of Orisha 3": a subtitle that ends in a series position. */
-const TRAILING_POSITION = /[a-z][a-z'’]*\s+(\d{1,2})\s*$/i;
+/**
+ * "Legacy of Orisha 3": a subtitle that ends in a series position after at least two words of series name. One
+ * word plus a number ("Year 1", "Apollo 13") is too often part of the title, and so is a part, an episode, a day.
+ */
+const TRAILING_POSITION = /[a-z][a-z'’]*\s+[a-z][a-z'’]*\s+(\d{1,2})\s*$/i;
+const NOT_A_POSITION = /\b(?:part|year|episode|chapter|day|act|phase|season|apollo)\b/i;
+/** Words a volume marker is made of, which do not name a series ("Book Two of the series"). */
+const MARKER_WORDS = new Set([
+  'book',
+  'bk',
+  'volume',
+  'vol',
+  'of',
+  'the',
+  'a',
+  'an',
+  'series',
+  'unabridged',
+  'abridged',
+  ...Object.keys(NUMBER_WORDS),
+]);
 /** "A Mistborn Novel", "(Unabridged)": a subtitle that names the form, not the book. */
 const FORM_WORD = /\b(?:novel|novella|novelette|unabridged|abridged)\b/i;
 /**
@@ -194,21 +218,34 @@ function containsWords(outer: string, inner: string): boolean {
 
 /**
  * Is this subtitle decoration (it names the series, a position or the form) rather than part of the title?
- * Returns the volume it names (or undefined when it names none), or null when it is NOT decoration.
+ * Returns the volume it names (none when it names the form only) and whether it named ONLY a volume, or null
+ * when it is NOT decoration.
  */
-function decorationVolume(
+function decoration(
   tail: string,
   headKey: string,
   compilation: (t: string) => boolean,
-): number | undefined | null {
+): { volume?: number; bare?: true } | null {
   if (OTHER_WORK.test(tail) || compilation(tail)) return null;
+  const tailKey = normalizeTitle(tail);
   // The head is the series itself ("Mistborn: Mistborn, Book 2"): the subtitle carries the book, not the decoration.
-  if (containsWords(normalizeTitle(tail), headKey)) return null;
+  if (containsWords(tailKey, headKey)) return null;
   const marked = MARKED_VOLUME.exec(tail);
-  if (marked) return toNumber(marked[1]);
-  const trailing = TRAILING_POSITION.exec(tail.replace(/\s*[([{][^)\]}]*[)\]}]\s*$/, ''));
-  if (trailing) return toNumber(trailing[1]);
-  if (FORM_WORD.test(tail)) return undefined;
+  if (marked) {
+    const volume = toNumber(marked[1]);
+    // "Book 3" alone names no series, so the head may BE the series ("Shadow and Bone: Book 3").
+    const namesSeries = tailKey
+      .split(' ')
+      .some((word) => word.length > 0 && !MARKER_WORDS.has(word) && !/^\d+$/.test(word));
+    return volume === undefined ? null : namesSeries ? { volume } : { volume, bare: true };
+  }
+  const plain = tail.replace(/\s*[([{][^)\]}]*[)\]}]\s*$/, '');
+  const trailing = NOT_A_POSITION.test(plain) ? null : TRAILING_POSITION.exec(plain);
+  if (trailing) {
+    const volume = toNumber(trailing[1]);
+    return volume === undefined ? null : { volume };
+  }
+  if (FORM_WORD.test(tail)) return {};
   return null;
 }
 
@@ -233,11 +270,12 @@ export function coreTitles(
   const full = normalizeTitle(raw);
   const seriesKey = series === undefined ? '' : normalizeTitle(series);
   const out: CoreTitle[] = [];
-  const push = (text: string, volume: number | undefined): void => {
+  const push = (text: string, volume: number | undefined, bare?: true): void => {
     const key = normalizeTitle(text);
     if (key.length === 0 || key === full || !/[a-z]/.test(key)) return;
-    if (out.some((core) => core.key === key && core.volume === volume)) return;
-    out.push(volume === undefined ? { key } : { key, volume });
+    if (out.some((core) => core.key === key && core.volume === volume && core.bare === bare))
+      return;
+    out.push({ key, ...(volume === undefined ? {} : { volume }), ...(bare ? { bare } : {}) });
   };
   const subtitle = (text: string, prefixVolume: number | undefined): void => {
     const split = SUBTITLE_SEPARATOR.exec(text);
@@ -250,10 +288,12 @@ export function coreTitles(
     if (seriesKey.length > 0 && tailKey === seriesKey) push(head, prefixVolume);
     if (seriesKey.length > 0 && headKey === seriesKey && !compilation(tail))
       push(tail, prefixVolume);
-    const volume = decorationVolume(tail, headKey, compilation);
-    if (volume === null) return;
+    const found = decoration(tail, headKey, compilation);
+    if (found === null) return;
+    const volume = found.volume;
     if (volume !== undefined && prefixVolume !== undefined && volume !== prefixVolume) return;
-    push(head, volume ?? prefixVolume);
+    // A prefix already named the volume of THIS title, so a bare "Book 3" after it is no longer bare.
+    push(head, volume ?? prefixVolume, prefixVolume === undefined ? found.bare : undefined);
   };
 
   const prefix = POSITION_PREFIX.exec(raw.trim());
@@ -335,7 +375,8 @@ export class TitleIndex {
   private readonly byKey = new Map<string, TitleEntry[]>();
   private readonly byBookKey = new Map<string, TitleEntry[]>();
   private readonly entries: TitleEntry[] = [];
-  private cores: Map<string, Array<{ entry: TitleEntry; volume?: number }>> | undefined;
+  private cores:
+    Map<string, Array<{ entry: TitleEntry; volume?: number; bare?: true }>> | undefined;
   private splits:
     | Array<{ entry: TitleEntry; headKey: string; tailKey: string; head: string; tail: string }>
     | undefined;
@@ -403,7 +444,9 @@ export class TitleIndex {
    * (`coreTitles`) — "Caliban's War: The Expanse, Book 2" holds "Caliban's War", "Expanse 03 - Abaddon's Gate"
    * holds "Abaddon's Gate". Every guard of the exact pass still applies (ambiguity, author, claims), plus:
    *
-   *   - the volume a decoration names must agree with the other side's and with the work's series position;
+   *   - the volume a decoration names must agree with the other side's and with the work's series position, and a
+   *     decoration that names only a volume ("Shadow and Bone: Book 3", whose head may be the series name) pairs
+   *     only with a side known to be that same volume;
    *   - the key the work matches under must be the work's alone in this list (`sharedKey`), so two members that
    *     share a stripped title ("X: Book 1", "X: Book 2") never take one item. A source that lists one book twice
    *     ("Caliban's War" at position 2 and "Caliban's War: The Expanse, Book 2") is not a clash: same volume.
@@ -429,9 +472,14 @@ export class TitleIndex {
     };
     for (const workKey of workKeys) {
       if (sharedKey(workKey.key)) continue; // another member of the list shares this key: refuse
-      const workSide = workKey.key === full ? undefined : workKey.volume;
-      // The work's decoration stripped, the library's title whole.
-      if (workKey.key !== full) {
+      const stripped = workKey.key !== full;
+      const workSide = stripped ? workKey.volume : undefined;
+      const workBare = stripped && workKey.bare === true;
+      // The volume this work is known to be: its own decoration's, else its series position.
+      const workVolume = workSide ?? work.position;
+      // The work's decoration stripped, the library's title whole. A bare work key ("Shadow and Bone: Book 3")
+      // may have left the series name, which a whole library title of that name is not.
+      if (stripped && !workBare) {
         for (const entry of [
           ...(this.byKey.get(workKey.key) ?? []),
           ...(this.byBookKey.get(workKey.key) ?? []),
@@ -439,11 +487,15 @@ export class TitleIndex {
           if (agrees(workSide, work.position)) found.push({ entry });
         }
       }
-      // The library's decoration stripped (the work's title whole or stripped).
+      // The library's decoration stripped (the work's title whole or stripped). A bare decoration on either
+      // side pairs only with the same volume named on the other.
       for (const core of this.coreIndex().get(workKey.key) ?? []) {
-        if (agrees(workSide, core.volume, work.position)) found.push(core);
+        if (!agrees(workSide, core.volume, work.position)) continue;
+        if (core.bare && (core.volume === undefined || workVolume !== core.volume)) continue;
+        if (workBare && core.volume !== workSide) continue;
+        found.push(core);
       }
-      if (seriesKey.length > 0) {
+      if (seriesKey.length > 0 && !workBare) {
         for (const split of this.splitIndex()) {
           const side =
             split.tailKey === seriesKey && split.headKey === workKey.key
@@ -466,13 +518,17 @@ export class TitleIndex {
     return pick(unique, work.authors, claimed, () => agrees(...volumes));
   }
 
-  private coreIndex(): Map<string, Array<{ entry: TitleEntry; volume?: number }>> {
+  private coreIndex(): Map<string, Array<{ entry: TitleEntry; volume?: number; bare?: true }>> {
     if (this.cores) return this.cores;
-    const cores = new Map<string, Array<{ entry: TitleEntry; volume?: number }>>();
+    const cores = new Map<string, Array<{ entry: TitleEntry; volume?: number; bare?: true }>>();
     for (const entry of this.entries) {
       for (const core of coreTitles(entry.raw, undefined, this.compilation)) {
         const list = cores.get(core.key) ?? [];
-        list.push(core.volume === undefined ? { entry } : { entry, volume: core.volume });
+        list.push({
+          entry,
+          ...(core.volume === undefined ? {} : { volume: core.volume }),
+          ...(core.bare ? { bare: core.bare } : {}),
+        });
         cores.set(core.key, list);
       }
     }

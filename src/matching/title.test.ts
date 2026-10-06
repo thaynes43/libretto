@@ -154,6 +154,18 @@ describe('coreTitles — decoration taken off, never the book', () => {
     expect(keys('Mistborn: Mistborn, Book 2')).toEqual([]);
   });
 
+  it('marks a subtitle that names only a volume as bare (its head may be the series name)', () => {
+    expect(keys('Shadow and Bone: Book 3')).toEqual([
+      { key: 'shadow and bone', volume: 3, bare: true },
+    ]);
+  });
+
+  it('never reads a part, a year or a one-word name before a number as a position', () => {
+    expect(keys('Batman: Year 1')).toEqual([]);
+    expect(keys('Lost Moon: Apollo 13')).toEqual([]);
+    expect(keys('Words of Radiance: Part 2')).toEqual([]);
+  });
+
   it('never reads a number that belongs to the title as a position', () => {
     expect(keys('Catch-22: A Novel')).toEqual([{ key: 'catch 22' }]);
     expect(keys('Fahrenheit 451 - The Graphic Novel')).toEqual([]);
@@ -299,6 +311,27 @@ describe('TitleIndex.findDecorated', () => {
         alone,
       )?.item.id,
     ).toBe('x');
+  });
+
+  it('a bare volume decoration pairs only with a work known to be that volume', () => {
+    const index = new TitleIndex([{ id: 'x', title: 'Shadow and Bone: Book 3' }]);
+    const work = (position?: number) => ({
+      title: 'Shadow and Bone',
+      authors: undefined,
+      position,
+    });
+    expect(index.findDecorated(work(), none, alone)).toBeUndefined();
+    expect(index.findDecorated(work(1), none, alone)).toBeUndefined();
+    expect(index.findDecorated(work(3), none, alone)?.item.id).toBe('x');
+    // The other way round: a work that names only its volume never takes the plain series-name title.
+    const plain = new TitleIndex([{ id: 'p', title: 'Shadow and Bone' }]);
+    expect(
+      plain.findDecorated(
+        { title: 'Shadow and Bone: Book 3', authors: undefined, position: 3 },
+        none,
+        alone,
+      ),
+    ).toBeUndefined();
   });
 
   it('refuses a key another member of the list shares', () => {

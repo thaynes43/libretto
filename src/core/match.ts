@@ -67,6 +67,14 @@ export interface MatchOptions {
   oneSeries?: boolean;
 }
 
+/**
+ * A work's position as a SERIES volume, for the decorated-title volume guard: only a work that names its series
+ * (a hardcover_series work) has one. An NYT list rank or any other ordering is not a volume.
+ */
+function seriesPosition(work: WorkItem): number | undefined {
+  return work.series === undefined ? undefined : work.position;
+}
+
 /** Match an ordered work list against a target's library items (work grain by default). */
 export function matchWorks(
   works: readonly WorkItem[],
@@ -107,7 +115,8 @@ export function matchWorks(
     for (const work of works) {
       if (work.title === undefined) continue;
       const cores = coreTitles(work.title, work.series, isCompilationTitle);
-      const volume = work.position ?? cores.find((core) => core.volume !== undefined)?.volume;
+      const volume =
+        seriesPosition(work) ?? cores.find((core) => core.volume !== undefined)?.volume;
       const keys = new Set([normalizeTitle(work.title), ...cores.map((core) => core.key)]);
       for (const key of keys) {
         if (key.length === 0) continue;
@@ -169,7 +178,7 @@ export function matchWorks(
                 {
                   title: work.title,
                   authors: work.authors,
-                  position: work.position,
+                  position: seriesPosition(work),
                   series: work.series,
                 },
                 claimed,

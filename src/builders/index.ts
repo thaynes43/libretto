@@ -33,8 +33,9 @@ export interface WorkItem {
   series?: string;
   /**
    * Ordinal position within the source ordering (series position, list rank) when the
-   * builder exposes one. Purely for display in the member preview (M4 builder page); the
-   * matcher never reads it. Undefined for order-free sources (static_ids).
+   * builder exposes one. Shown in the member preview (M4 builder page). The matcher reads it
+   * only for a work that names its `series` (a series position is a volume number; a list
+   * rank is not), as the decorated-title volume guard. Undefined for order-free sources.
    */
   position?: number;
 }
