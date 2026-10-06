@@ -53,7 +53,7 @@ variables:
     'On the Way to the Wedding': ['On the Way to the Wedding with 2nd Epilogue']
 ```
 
-An alias is tried after the member's own title and before the decoration pass. It is an exact title (the same noise stripping, nothing else, so "The World" never takes "The World of Divergent"), and it keeps every guard: an ambiguous title is refused, disjoint authors veto it, and an item another member took stays taken. A member whose own title the library holds keeps that item. Aliases apply even with `titleFallback: false`, since a person confirmed each one, and only at work grain (a comics recipe pairs whole series by name). A match through an alias is counted in `counts.matchedByTitle`. Check the book by hand before writing one: an alias for another volume or edition of a series would hold a book the library does not have.
+An alias is tried only for a member whose own title the library carries nowhere (an own title that was refused as ambiguous, author-vetoed or already taken stays refused), and before the decoration pass. It is an exact title (the same noise stripping, nothing else, so "The World" never takes "The World of Divergent"), and it keeps every guard: an ambiguous title is refused, disjoint authors veto it, and an item another member took stays taken. Aliases apply even with `titleFallback: false`, since a person confirmed each one, and only at work grain (a comics recipe pairs whole series by name). A match through an alias is counted in `counts.matchedByTitle`. Check the book by hand before writing one: an alias for another volume or edition of a series would hold a book the library does not have.
 
 ## Compilation editions
 
