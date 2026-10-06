@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 
 /**
@@ -39,6 +39,34 @@ export class DiskCache {
 
   async delete(key: string): Promise<void> {
     await rm(this.fileFor(key), { force: true });
+  }
+
+  /**
+   * Delete every expired or unreadable entry. A key that is no longer used (a bumped cache version, a search query
+   * nobody repeats) leaves its file behind; this reclaims them. Returns how many files it removed.
+   */
+  async prune(): Promise<number> {
+    let names: string[];
+    try {
+      names = await readdir(this.dir);
+    } catch {
+      return 0;
+    }
+    let removed = 0;
+    for (const name of names) {
+      if (!name.endsWith('.json')) continue;
+      const file = path.join(this.dir, name);
+      let expiresAt: unknown;
+      try {
+        expiresAt = (JSON.parse(await readFile(file, 'utf8')) as { expiresAt?: unknown }).expiresAt;
+      } catch {
+        expiresAt = undefined;
+      }
+      if (typeof expiresAt === 'number' && expiresAt > this.now()) continue;
+      await rm(file, { force: true });
+      removed += 1;
+    }
+    return removed;
   }
 
   /** Read-through helper: cached value if fresh, else compute + store. */

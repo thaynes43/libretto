@@ -61,4 +61,22 @@ describe('DiskCache', () => {
     expect(await cache.get('key-1')).toBe('one');
     expect(await cache.get('key-2')).toBe('two');
   });
+
+  it('prune removes expired and unreadable entries and keeps fresh ones', async () => {
+    let now = 1_000_000;
+    const cache = new DiskCache(dir, () => now);
+    await cache.set('old', 'value', 500);
+    await cache.set('fresh', 'value', 60_000);
+    await writeFile(path.join(dir, 'garbage.json'), 'not json', 'utf8');
+    await writeFile(path.join(dir, 'notes.txt'), 'not a cache file', 'utf8');
+    now += 501;
+    expect(await cache.prune()).toBe(2);
+    expect(await cache.get('fresh')).toBe('value');
+    const fs = await import('node:fs/promises');
+    expect((await fs.readdir(dir)).sort()).toHaveLength(2); // fresh + notes.txt
+  });
+
+  it('prune of a cache that was never written is a no-op', async () => {
+    expect(await new DiskCache(path.join(dir, 'absent')).prune()).toBe(0);
+  });
 });

@@ -1,3 +1,4 @@
+import { readdir } from 'node:fs/promises';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { KavitaTarget } from './kavita.js';
@@ -14,6 +15,7 @@ describe('KavitaTarget', () => {
   let close: () => Promise<void>;
   let cleanup: () => Promise<void>;
   let cache: DiskCache;
+  let cacheDir: string;
   let url: string;
   let target: KavitaTarget;
 
@@ -71,7 +73,8 @@ describe('KavitaTarget', () => {
 
     const tmp = await makeTempDir();
     cleanup = tmp.cleanup;
-    cache = new DiskCache(path.join(tmp.dir, 'cache'));
+    cacheDir = path.join(tmp.dir, 'cache');
+    cache = new DiskCache(cacheDir);
     const server = await startStubServer(stub.app);
     close = server.close;
     url = server.url;
@@ -143,10 +146,61 @@ describe('KavitaTarget', () => {
       await target.listItems('2');
       expect(volumeCalls()).toHaveLength(afterFirst); // all served from disk cache
 
-      // Content change: the series' page count moves, so the key rotates.
+      // Content change: the series' page count moves, so the entry is refetched.
       stub.setSeriesPages(11, 700);
       await target.listItems('2');
       expect(volumeCalls()).toHaveLength(afterFirst + 1);
+    });
+
+    describe('a metadata edit reaches the matcher (issue #25)', () => {
+      const editedBooks = async (listing: KavitaTarget) =>
+        (await listing.listItems('2')).find((item) => item.id === '11')!.books;
+
+      it('is seen at the next listing once the series is scanned after the edit', async () => {
+        const volumeCalls = () => stub.requests.filter((r) => r.includes('/api/Series/volumes'));
+        expect(await editedBooks(target)).toBeUndefined();
+        const afterFirst = volumeCalls().length;
+
+        // The edit alone moves no SeriesDto field: the cached detail still serves.
+        stub.setChapterTitle(11, 0, 'Leviathan Wakes: Book One');
+        expect(await editedBooks(target)).toBeUndefined();
+        expect(volumeCalls()).toHaveLength(afterFirst);
+
+        // "Scan Series" moves lastFolderScanned, and only that series is refetched.
+        stub.scanSeries(11, '2026-10-06T12:47:22.9785091');
+        expect(await editedBooks(target)).toEqual([
+          ['Leviathan Wakes: Book One', 'Leviathan Wakes: Leviathan Wakes: Book One'],
+        ]);
+        expect(volumeCalls()).toHaveLength(afterFirst + 1);
+      });
+
+      it('is seen without a scan once the entry is 12 hours old', async () => {
+        let now = Date.parse('2026-10-06T14:33:00Z');
+        const clocked = new KavitaTarget(
+          { url, apiKey: API_KEY },
+          silentLogger,
+          new DiskCache(path.join(cacheDir, 'clocked'), () => now),
+        );
+        expect(await editedBooks(clocked)).toBeUndefined();
+        stub.setChapterTitle(11, 0, 'Leviathan Wakes: Book One');
+
+        now += 12 * 60 * 60 * 1000 - 1;
+        expect(await editedBooks(clocked)).toBeUndefined();
+        now += 1;
+        expect(await editedBooks(clocked)).toEqual([
+          ['Leviathan Wakes: Book One', 'Leviathan Wakes: Leviathan Wakes: Book One'],
+        ]);
+      });
+
+      it('keeps one cache file per series: a new fingerprint overwrites the old entry', async () => {
+        await target.listItems('2');
+        const files = async () => (await readdir(cacheDir)).length;
+        const before = await files();
+        stub.scanSeries(11, '2026-10-06T12:47:22.9785091');
+        stub.setSeriesPages(12, 999);
+        await target.listItems('2');
+        expect(await files()).toBe(before);
+      });
     });
   });
 

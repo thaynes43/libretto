@@ -22,6 +22,8 @@ export interface KavitaStubSeries {
   chapterIsbns: (string | null)[];
   /** Per chapter (same order as chapterIsbns): its own title, Writer credits and file path. */
   chapters?: { titleName?: string; writers?: string[]; filePath?: string }[];
+  /** SeriesDto `lastFolderScanned` (moves on a scan of the series). */
+  lastFolderScanned?: string;
 }
 
 interface KavitaStubCollection {
@@ -97,7 +99,13 @@ export class KavitaStub {
         }),
       );
       return c.json(
-        slice.map(({ id, name, libraryId, pages }) => ({ id, name, libraryId, pages })),
+        slice.map(({ id, name, libraryId, pages, lastFolderScanned }) => ({
+          id,
+          name,
+          libraryId,
+          pages,
+          lastFolderScanned: lastFolderScanned ?? '2026-07-10T12:47:45.9340149',
+        })),
       );
     });
 
@@ -282,6 +290,23 @@ export class KavitaStub {
 
   seedSeries(series: KavitaStubSeries): void {
     this.series.push(series);
+  }
+
+  /**
+   * Test lever: a metadata edit through Kavita's API (a chapter title fixed and locked). No SeriesDto field moves.
+   */
+  setChapterTitle(id: number, index: number, titleName: string): void {
+    const series = this.series.find((one) => one.id === id);
+    if (!series) return;
+    const chapters = series.chapters ?? series.chapterIsbns.map(() => ({}));
+    chapters[index] = { ...chapters[index], titleName };
+    series.chapters = chapters;
+  }
+
+  /** Test lever: "Scan Series" (moves `lastFolderScanned`, nothing else). */
+  scanSeries(id: number, at: string): void {
+    const series = this.series.find((one) => one.id === id);
+    if (series) series.lastFolderScanned = at;
   }
 
   /** Test lever: simulate content changing (page count moves). */

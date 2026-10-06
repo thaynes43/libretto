@@ -19,6 +19,15 @@ ensureConfigDirs(config);
 const recipeStore = new RecipeStore(config.recipesDir);
 const runStore = new RunStore(config.runsFile);
 const cache = new DiskCache(config.cacheDir);
+// Expired cache files are reclaimed at boot and daily: a retired key never gets rewritten, so its file stays.
+const pruneCache = (): void => {
+  cache
+    .prune()
+    .then((removed) => log.info({ removed }, 'cache: pruned expired entries'))
+    .catch((error: unknown) => log.warn({ err: error }, 'cache: prune failed'));
+};
+pruneCache();
+setInterval(pruneCache, 24 * 60 * 60 * 1000).unref();
 const targets = createTargetRegistry(config, log, cache);
 const builders = createBuilderContext(config, cache, log);
 const resolve = createResolveBroker(config, log);

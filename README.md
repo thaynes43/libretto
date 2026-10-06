@@ -23,7 +23,7 @@ So the marker lives in the targets everywhere, and the sidecar ownership file th
 
 ### Identifier matching on Kavita, resolved
 
-Kavita exposes ISBNs per **chapter** (that is, per book file), not per series: `GET /api/Series/volumes?seriesId=` and collect each chapter's `isbn`. Libretto does that per series and caches the result on disk (keyed by series id plus page count, so content changes refresh it). One honest caveat: Kavita only parses an epub ISBN when the OPF `<dc:identifier>` carries `opf:scheme="ISBN"` or an `isbn:`/`urn:isbn:` prefix it can validate. EPUB3 files without the scheme attribute yield no ISBN in Kavita, so such series cannot match on identifier alone. The conservative title fallback below recovers most of them; the rest appear in `missing[]`, and fixing the epub metadata (or re-tagging with a tool that writes the scheme attribute) is the permanent remedy.
+Kavita exposes ISBNs per **chapter** (that is, per book file), not per series: `GET /api/Series/volumes?seriesId=` and collect each chapter's `isbn`. Libretto does that per series and caches the result on disk, one entry per series. The entry is refetched when the series' page count, last folder scan or last chapter added moves, and at least every 12 hours. A metadata edit (a chapter title or writers corrected in Kavita) moves none of those, so scan the series after the edit ("Scan Series") to have the next run see it at once; without a scan it is seen within 12 hours. A full refresh of a ~1,800-series library is about 1,800 cheap calls (a few milliseconds each). One honest caveat: Kavita only parses an epub ISBN when the OPF `<dc:identifier>` carries `opf:scheme="ISBN"` or an `isbn:`/`urn:isbn:` prefix it can validate. EPUB3 files without the scheme attribute yield no ISBN in Kavita, so such series cannot match on identifier alone. The conservative title fallback below recovers most of them; the rest appear in `missing[]`, and fixing the epub metadata (or re-tagging with a tool that writes the scheme attribute) is the permanent remedy.
 
 Audiobookshelf is simpler: item metadata carries `isbn` and `asin` directly in the standard listing, no per-item fetches.
 
@@ -179,7 +179,8 @@ Everything lives on the `/config` volume (override with `CONFIG_DIR`):
                written by Libretto only on an explicit API save
   state/       runs.json, the last 50 run records (losable)
   cache/       TTL disk cache: resolved Hardcover series and NYT lists,
-               per-series Kavita ISBN lookups (losable, rebuilds itself)
+               per-series Kavita ISBN lookups (losable, rebuilds itself;
+               expired files are pruned at boot and daily)
 ```
 
 Environment variables (all connection settings are validated at use, not at boot):
