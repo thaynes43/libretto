@@ -216,6 +216,13 @@ function containsWords(outer: string, inner: string): boolean {
   return inner.length > 0 && ` ${outer} `.includes(` ${inner} `);
 }
 
+/** Does this stretch of a subtitle hold any word that is not part of a volume marker? */
+function namesWords(text: string): boolean {
+  return normalizeTitle(text)
+    .split(' ')
+    .some((word) => word.length > 0 && !MARKER_WORDS.has(word) && !/^\d+$/.test(word));
+}
+
 /**
  * Is this subtitle decoration (it names the series, a position or the form) rather than part of the title?
  * Returns the volume it names (none when it names the form only) and whether it named ONLY a volume, or null
@@ -233,10 +240,12 @@ function decoration(
   const marked = MARKED_VOLUME.exec(tail);
   if (marked) {
     const volume = toNumber(marked[1]);
-    // "Book 3" alone names no series, so the head may BE the series ("Shadow and Bone: Book 3").
-    const namesSeries = tailKey
-      .split(' ')
-      .some((word) => word.length > 0 && !MARKER_WORDS.has(word) && !/^\d+$/.test(word));
+    // The series is named before the marker ("The Expanse, Book 2") or after an "of" ("Book Two of the Expanse
+    // series"). Words that just follow the number are the BOOK's title ("Shadow and Bone: Book 3, Ruin and Rising"),
+    // and "Book 3" alone names nothing: either way the head may BE the series, so the core is bare.
+    const before = tail.slice(0, marked.index);
+    const after = tail.slice(marked.index + marked[0].length);
+    const namesSeries = namesWords(before) || (/^[\s,]*of\b/i.test(after) && namesWords(after));
     return volume === undefined ? null : namesSeries ? { volume } : { volume, bare: true };
   }
   const plain = tail.replace(/\s*[([{][^)\]}]*[)\]}]\s*$/, '');

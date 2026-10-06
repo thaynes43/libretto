@@ -158,6 +158,15 @@ describe('coreTitles — decoration taken off, never the book', () => {
     expect(keys('Shadow and Bone: Book 3')).toEqual([
       { key: 'shadow and bone', volume: 3, bare: true },
     ]);
+    // Words after the number are the book's own title, not a series name.
+    expect(keys('Shadow and Bone: Book 3, Ruin and Rising')).toEqual([
+      { key: 'shadow and bone', volume: 3, bare: true },
+    ]);
+    // ...while the position-prefix form yields the book itself.
+    expect(keys('Shadow and Bone: Book 3 - Ruin and Rising')).toEqual([
+      { key: 'ruin and rising', volume: 3 },
+      { key: 'shadow and bone', volume: 3, bare: true },
+    ]);
   });
 
   it('never reads a part, a year or a one-word name before a number as a position', () => {
