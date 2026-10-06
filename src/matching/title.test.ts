@@ -118,6 +118,17 @@ describe('coreTitles — decoration taken off, never the book', () => {
     ]);
   });
 
+  it('keeps a fractional position, and reads a zero-padded index with no dash', () => {
+    expect(keys('Expanse 02.5 - Gods of Risk')).toEqual([{ key: 'gods of risk', volume: 2.5 }]);
+    expect(keys('Expansee 09 Leviathan Falls')).toEqual([{ key: 'leviathan falls', volume: 9 }]);
+    expect(keys('Aurora Teagarden 08 Poppy Done to Death')).toEqual([
+      { key: 'poppy done to death', volume: 8 },
+    ]);
+    // Without the zero a bare number may be part of the title.
+    expect(keys('Fahrenheit 451 The Graphic Novel')).toEqual([]);
+    expect(keys('Room 9 Blues')).toEqual([]);
+  });
+
   it('drops a subtitle that names a volume or the form', () => {
     expect(keys("Caliban's War: The Expanse, Book 2")).toEqual([
       { key: 'calibans war', volume: 2 },
