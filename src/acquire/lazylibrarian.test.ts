@@ -78,6 +78,17 @@ describe('LazyLibrarianClient', () => {
     expect(books[1]!.isbn).toBeNull();
   });
 
+  it('getAllBooks carries the AuthorName LazyLibrarian joins in (thaynes43/haynesnetwork#771)', async () => {
+    const rows = [
+      { BookID: 'vkDiAAAAMAAJ', BookName: 'The Gray Dawn', AuthorName: 'Stewart Edward White' },
+      { BookID: 'X', BookName: 'Y', AuthorName: '  ' },
+    ];
+    const { fetchImpl } = stubFetch(() => ({ body: JSON.stringify(rows) }));
+    const books = await new LazyLibrarianClient(opts(fetchImpl)).getAllBooks();
+    expect(books[0]!.author).toBe('Stewart Edward White');
+    expect(books[1]).not.toHaveProperty('author');
+  });
+
   it('getAllBooks tolerates the { data: [...] } envelope', async () => {
     const { fetchImpl } = stubFetch(() => ({
       body: JSON.stringify({ data: [{ BookID: 'X', BookName: 'Y' }] }),

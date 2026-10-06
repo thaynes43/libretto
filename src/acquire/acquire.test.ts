@@ -204,6 +204,131 @@ describe('acquireMissing', () => {
     expect(getAll).not.toHaveBeenCalled();
   });
 
+  describe('author credits guard the title fallback (thaynes43/haynesnetwork#771)', () => {
+    // "Gray Dawn" is Walter Mosley's (Easy Rawlins #17); LazyLibrarian holds Stewart Edward White's "The Gray Dawn".
+    const grayDawn = work({
+      identifiers: ['isbn:9780316573238'],
+      label: 'Gray Dawn (#17 in Easy Rawlins)',
+      title: 'Gray Dawn',
+      credits: ['Walter Mosley'],
+    });
+
+    it('never drives another author’s book that shares the title', async () => {
+      const ll = new FakeLazyLibrarian([
+        llBook({
+          bookId: 'vkDiAAAAMAAJ',
+          title: 'The Gray Dawn',
+          author: 'Stewart Edward White',
+          ebookStatus: 'Skipped',
+        }),
+      ]);
+      const resolve = {
+        resolve: vi.fn(() => Promise.resolve({ resolved: null, reason: 'no_match' as const })),
+      };
+      await acquireMissing('r', [grayDawn], 'ebook', ctxFor(ll, { resolve }), silentLogger);
+      expect(ll.calls.filter((c) => c.cmd === 'queueBook' || c.cmd === 'searchBook')).toEqual([]);
+      // Not in LazyLibrarian as Mosley's book, so it is resolved, and the resolve is told the author.
+      expect(resolve.resolve).toHaveBeenCalledWith(
+        expect.objectContaining({ title: 'Gray Dawn', authors: ['Walter Mosley'] }),
+      );
+    });
+
+    it('still drives the member’s own book, and a book with no author is judged on its title', async () => {
+      const ll = new FakeLazyLibrarian([
+        llBook({
+          bookId: 'MOSLEY',
+          title: 'Gray Dawn',
+          author: 'Walter Mosley',
+          ebookStatus: 'Skipped',
+        }),
+        llBook({ bookId: 'ANON', title: 'Charcoal Joe', ebookStatus: 'Skipped' }),
+      ]);
+      const counts = await acquireMissing(
+        'r',
+        [
+          grayDawn,
+          work({ label: 'Charcoal Joe', title: 'Charcoal Joe', credits: ['Walter Mosley'] }),
+        ],
+        'ebook',
+        ctxFor(ll),
+        silentLogger,
+      );
+      expect(counts.queued).toBe(2);
+      expect(ll.calls.filter((c) => c.cmd === 'queueBook').map((c) => c.id)).toEqual([
+        'MOSLEY',
+        'ANON',
+      ]);
+    });
+
+    it('two LazyLibrarian rows under one title stay ambiguous, even when their authors agree', async () => {
+      const ll = new FakeLazyLibrarian([
+        llBook({
+          bookId: 'A1',
+          title: 'Gray Dawn',
+          author: 'Walter Mosley',
+          ebookStatus: 'Skipped',
+        }),
+        llBook({ bookId: 'B2', title: 'Gray Dawn', author: 'Walter Mosley', ebookStatus: 'Have' }),
+      ]);
+      await acquireMissing('r', [grayDawn], 'ebook', ctxFor(ll), silentLogger);
+      expect(ll.calls.filter((c) => c.cmd === 'queueBook' || c.cmd === 'searchBook')).toEqual([]);
+    });
+
+    it('once the member’s own book is added beside another author’s, the title finds it (no re-add loop)', async () => {
+      const ll = new FakeLazyLibrarian([
+        llBook({
+          bookId: 'vkDiAAAAMAAJ',
+          title: 'The Gray Dawn',
+          author: 'Stewart Edward White',
+          ebookStatus: 'Open',
+        }),
+        // The row the first run added: no ISBN that matches a Hardcover edition.
+        llBook({
+          bookId: 'GkU_EQAAQBAJ',
+          title: 'Gray Dawn',
+          author: 'Walter Mosley',
+          ebookStatus: 'Skipped',
+        }),
+      ]);
+      const resolve = { resolve: vi.fn() };
+      const counts = await acquireMissing(
+        'r',
+        [grayDawn],
+        'ebook',
+        ctxFor(ll, { resolve }),
+        silentLogger,
+      );
+      expect(counts.queued).toBe(1);
+      expect(ll.calls.filter((c) => c.cmd === 'queueBook').map((c) => c.id)).toEqual([
+        'GkU_EQAAQBAJ',
+      ]);
+      expect(resolve.resolve).not.toHaveBeenCalled();
+    });
+
+    it('the resolve gets the first credit only (one inauthor: query)', async () => {
+      const ll = new FakeLazyLibrarian([]);
+      const resolve = {
+        resolve: vi.fn(() => Promise.resolve({ resolved: null, reason: 'no_match' as const })),
+      };
+      await acquireMissing(
+        'r',
+        [
+          work({
+            label: 'Good Omens',
+            title: 'Good Omens',
+            credits: ['Terry Pratchett', 'Neil Gaiman'],
+          }),
+        ],
+        'ebook',
+        ctxFor(ll, { resolve }),
+        silentLogger,
+      );
+      expect(resolve.resolve).toHaveBeenCalledWith(
+        expect.objectContaining({ authors: ['Terry Pratchett'] }),
+      );
+    });
+  });
+
   describe('with the resolve broker (M3 direction-a)', () => {
     it('resolves ISBN -> volume id and adds via addBook, NOT addBookByISBN', async () => {
       const ll = new FakeLazyLibrarian([]);

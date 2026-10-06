@@ -462,6 +462,34 @@ describe('toMissingMember', () => {
     });
   });
 
+  it('names the member by the source’s credits when the work has no authors of its own (#771)', () => {
+    const member = toMissingMember(
+      work({
+        label: 'Gray Dawn (#17 in Easy Rawlins)',
+        title: 'Gray Dawn',
+        credits: ['Walter Mosley'],
+      }),
+    );
+    expect(member.authors).toEqual(['Walter Mosley']);
+    // A work's own authors win over credits.
+    expect(
+      toMissingMember(work({ label: 'x', authors: ['Andy Weir'], credits: ['Someone Else'] }))
+        .authors,
+    ).toEqual(['Andy Weir']);
+  });
+
+  it('credits never guard the library match (a library’s own author data is too uneven to veto with)', () => {
+    const items: TargetItem[] = [
+      { id: 'i', title: 'The End is Nigh', identifiers: [], authors: ['Veronica Roth (1)'] },
+    ];
+    const r = matchWorks(
+      [work({ label: 'The End is Nigh', title: 'The End is Nigh', credits: ['Hugh Howey'] })],
+      items,
+      { titleFallback: true },
+    );
+    expect(r.matchedIds).toEqual(['i']);
+  });
+
   it('handles an identifier-only work (no title/author/isbn)', () => {
     expect(toMissingMember(work({ identifiers: ['asin:B0071IHYRW'], label: 'x' }))).toEqual({
       label: 'x',

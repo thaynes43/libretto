@@ -87,7 +87,7 @@ The keyless `addBookByISBN` path resolves close to nothing in practice (LazyLibr
 
 Per missing work, per run:
 
-1. **Resolve** it to a LazyLibrarian book already in the database — conservatively, exactly like the D-04 title fallback: normalized ISBN first, then noise-stripped title (with the author guard); **ambiguity is skipped, never a wrong add**.
+1. **Resolve** it to a LazyLibrarian book already in the database — conservatively, exactly like the D-04 title fallback: normalized ISBN first, then noise-stripped title (with the author guard: the work's authors, or a `hardcover_series` member's credits, against LazyLibrarian's `AuthorName`, so _Gray Dawn_ by Walter Mosley never drives Stewart Edward White's _The Gray Dawn_); **ambiguity is skipped, never a wrong add**.
 2. **Already known and being acquired or held** (the format is `Wanted`, `Snatched`, `Open`, `Have`, `Matched`, or `Ignored`) → skip. Re-runs never duplicate.
 3. **Known but the format is `Skipped`** (or untracked) → `queueBook` + `searchBook` for that format. This is the reliable drive.
 4. **Unknown** → the **resolve broker** maps it (ISBN-first, guarded title fallback: coverage, omnibus, volume and author guards) to a Google Books volume id and `addBook(<volumeId>)`. If the broker is unconfigured or finds no match but the work has an ISBN → `addBookByISBN` fallback. No volume id and no ISBN → skipped with a logged reason. On success the book enters LazyLibrarian and is driven to a search on a later run (once `getAllBooks` reveals its `BookID`).
@@ -271,6 +271,8 @@ A builder turns `builder.ref` into the ordered work list the reconciler matches 
 | `hardcover_series` | a Hardcover series slug or numeric id              | Every book in the series ordered by series position ([Hardcover](https://hardcover.app/); needs `HARDCOVER_TOKEN`).                   |
 | `nyt_list`         | a NYT `list_name_encoded` slug                     | The current [NYT bestseller list](https://developer.nytimes.com/docs/books-product/1/overview) ordered by rank (needs `NYT_API_KEY`). |
 | `hardcover_comics` | an array of Hardcover series ids / slugs           | One-or-more comic **series**, matched at series grain and grouped into a collection (needs `HARDCOVER_TOKEN`). See below.             |
+
+**`hardcover_series`** also reads each book's authors (Hardcover's `cached_contributors`, the credits marked Author; never an illustrator or narrator). They name a missing member (`authors` on the missing endpoint) and guard acquisition (below), so another author's book that shares the title is never taken for the member. They do not guard the library match: a library's own author data is too uneven to veto with (an anthology filed under one of its contributors).
 
 **`static_ids`** entries are usually identifier strings (`isbn:…`, `asin:…`, or any opaque id your target exposes), matched exactly. An entry may instead be a **`{ title, author }`** object: it carries no identifier, so it rides the conservative title+author fallback only (flagged `matchedVia: title_author`, counted in `matchedByTitle`), and `titleFallback: true` (the default) is required for it to match. This keeps a hand-curated canon self-contained — no external ID lookup at authoring time — which is exactly what the [Authors program](#categories) uses:
 

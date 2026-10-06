@@ -1,4 +1,4 @@
-import type { WorkItem } from '../builders/index.js';
+import { workAuthors, type WorkItem } from '../builders/index.js';
 import { findCompilations, isCompilationTitle, listsOneSeries } from './compilation.js';
 import { coreTitles, normalizeTitle, TitleIndex } from '../matching/title.js';
 import { isSeriesGrain, type Recipe } from '../recipes/schema.js';
@@ -272,7 +272,7 @@ export interface MissingMember {
   label: string;
   /** Clean work title. */
   title: string | null;
-  /** Author names, when the builder supplied them. */
+  /** Author names, when the builder supplied them: the work's own, else the source's credits (`workAuthors`). */
   authors: string[];
   /** Primary ISBN-13 (first isbn: identifier), when known. */
   isbn: string | null;
@@ -287,7 +287,7 @@ export function toMissingMember(work: WorkItem, compilation = false): MissingMem
   return {
     label: work.label,
     title: work.title ?? null,
-    authors: work.authors ?? [],
+    authors: workAuthors(work) ?? [],
     isbn: work.identifiers.find((id) => id.startsWith('isbn:'))?.slice('isbn:'.length) ?? null,
     identifiers: work.identifiers,
     ...(compilation ? { compilation: true as const } : {}),

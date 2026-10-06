@@ -115,6 +115,7 @@ query LibrettoSeriesWorks($where: series_bool_exp!) {
       book {
         id
         title
+        cached_contributors
         default_physical_edition_id
         default_ebook_edition_id
         default_audio_edition_id
@@ -154,6 +155,8 @@ interface SeriesQueryData {
       book: {
         id: number;
         title: string;
+        /** Hardcover's denormalized credits: `[{ author: { name }, contribution }]` (a jsonb scalar, so depth-safe). */
+        cached_contributors?: unknown;
         default_physical_edition_id: number | null;
         default_ebook_edition_id: number | null;
         default_audio_edition_id: number | null;
@@ -182,6 +185,31 @@ interface ComicSeriesUnit {
   work: WorkItem;
 }
 
+/**
+ * The book's authors out of Hardcover's `cached_contributors` (thaynes43/haynesnetwork#771): the credits whose
+ * contribution is "Author" or unstated, in Hardcover's order, never an illustrator, narrator, editor or translator.
+ * Tolerant of any shape: anything unexpected is skipped, so a missing or changed field yields no credits, never an error.
+ */
+export function hardcoverAuthors(contributors: unknown): string[] {
+  if (!Array.isArray(contributors)) return [];
+  const names: string[] = [];
+  for (const entry of contributors) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const { author, contribution } = entry as { author?: unknown; contribution?: unknown };
+    if (contribution !== null && contribution !== undefined) {
+      if (typeof contribution !== 'string' || contribution.trim().toLowerCase() !== 'author')
+        continue;
+    }
+    const name =
+      author !== null && typeof author === 'object'
+        ? (author as { name?: unknown }).name
+        : undefined;
+    if (typeof name !== 'string' || name.trim().length === 0) continue;
+    if (!names.includes(name.trim())) names.push(name.trim());
+  }
+  return names;
+}
+
 export class HardcoverSeriesSource {
   private readonly url: string;
   private readonly minIntervalMs: number;
@@ -208,7 +236,8 @@ export class HardcoverSeriesSource {
     // fallback matched 0 in production because v1 entries carried no `title`).
     // v3 adds WorkItem.position (series position) for the M4 member preview.
     // v4 adds WorkItem.series (the series name) for the decorated-title match.
-    const cacheKey = `hardcover:series-works:v4:${ref}`;
+    // v5 adds WorkItem.credits (the book's authors) for consumers and acquisition.
+    const cacheKey = `hardcover:series-works:v5:${ref}`;
     const cached = await this.options.cache.get<WorkItem[]>(cacheKey);
     if (cached !== undefined) {
       this.options.log.debug({ ref, works: cached.length }, 'hardcover: series cache hit');
@@ -267,14 +296,17 @@ export class HardcoverSeriesSource {
         ranked.flatMap((edition) => [edition.isbn_13, edition.isbn_10, edition.asin]),
       );
       const position = entry.position === null ? '?' : String(entry.position);
+      const credits = hardcoverAuthors(book.cached_contributors);
       works.push({
         identifiers,
         label: `${book.title} (#${position} in ${series.name})`,
         // Clean title feeds the conservative D-04 title fallback when a target
-        // exposes no scheme'd ISBNs (e.g. Kavita epubs). Author is out of reach
-        // here: the Hardcover GraphQL depth-3 cap already spends its budget on
-        // series -> book_series -> book, so contributions would exceed it.
+        // exposes no scheme'd ISBNs (e.g. Kavita epubs). The authors come from the
+        // book's `cached_contributors` scalar (the `contributions` relation would
+        // exceed the depth-3 cap) and ride as `credits`: they name the member and
+        // guard acquisition, never the library match.
         title: book.title,
+        ...(credits.length > 0 ? { credits } : {}),
         series: series.name,
         ...(entry.position === null ? {} : { position: entry.position }),
       });

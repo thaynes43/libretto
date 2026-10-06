@@ -1,7 +1,7 @@
 import path from 'node:path';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { HardcoverSeriesSource } from './hardcover.js';
+import { hardcoverAuthors, HardcoverSeriesSource } from './hardcover.js';
 import { DiskCache } from '../cache/disk.js';
 import { makeTempDir, silentLogger } from '../testing/fixtures.js';
 import { startStubServer } from '../testing/http.js';
@@ -24,6 +24,15 @@ const SERIES_FIXTURE = {
           book: {
             id: 101,
             title: 'Leviathan Wakes',
+            // Live shape (api.hardcover.app, 2026-10-06): a jsonb list, one entry per credit.
+            cached_contributors: [
+              {
+                author: { id: 1, slug: 'james-s-a-corey', name: 'James S. A. Corey' },
+                contribution: null,
+              },
+              { author: { name: 'Jefferson Mays' }, contribution: 'Narrator' },
+              { author: { name: 'James S. A. Corey' }, contribution: 'Author' },
+            ],
             default_physical_edition_id: 1001,
             default_ebook_edition_id: null,
             default_audio_edition_id: 1003,
@@ -201,6 +210,26 @@ describe('HardcoverSeriesSource', () => {
     expect(works[2]!.identifiers).toEqual([]);
     // Bearer prefix is added to a bare token.
     expect(requests[0]!.auth).toBe('Bearer hc-token');
+    // The authors ride as credits (narrators never; one name once); a book without them carries none.
+    expect(works[0]!.credits).toEqual(['James S. A. Corey']);
+    expect(works[1]).not.toHaveProperty('credits');
+    expect(requests[0]!.query).toContain('cached_contributors');
+  });
+
+  it('reads authors out of cached_contributors tolerantly', () => {
+    expect(hardcoverAuthors(undefined)).toEqual([]);
+    expect(hardcoverAuthors('nope')).toEqual([]);
+    expect(
+      hardcoverAuthors([
+        null,
+        { author: null },
+        { author: { name: '' } },
+        { author: { name: 'Walter Mosley' }, contribution: 'Author' },
+        { author: { name: 'Paul Kidby' }, contribution: 'Illustrator' },
+        { author: { name: 'Terry Pratchett' } },
+        { author: { name: 'Walter Mosley' }, contribution: null },
+      ]),
+    ).toEqual(['Walter Mosley', 'Terry Pratchett']);
   });
 
   it('queries by id when the ref is numeric', async () => {
