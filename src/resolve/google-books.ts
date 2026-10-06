@@ -251,6 +251,20 @@ export interface GbResolveInput {
   isbn?: string | null;
   title: string;
   author?: string | null;
+  /**
+   * The acquisition language check (issue #26). A volume whose `language` this refuses is not a match: the ISBN leg
+   * falls through to the title leg, and a refused title hit resolves nothing. Absent ⇒ every language is accepted.
+   */
+  acceptLanguage?: (language: string | null) => boolean;
+}
+
+/** A resolve with the language check applied: the volume, or why there is none. */
+export interface GbResolveDetail {
+  volume: GbVolume | null;
+  /** True when the language check refused a volume a leg found. */
+  refused: boolean;
+  /** The language of the last volume the check refused, when it named one. */
+  refusedLanguage: string | null;
 }
 
 export interface GbVolume {
@@ -260,6 +274,8 @@ export interface GbVolume {
   isbn13: string | null;
   /** How the volume was resolved — surfaced in the run log / broker response for honesty. */
   via: 'isbn' | 'title';
+  /** The volume's language as Google Books reports it (`en`, `fr`, ...); absent when it names none. */
+  language?: string;
 }
 
 interface Volume {
@@ -268,6 +284,7 @@ interface Volume {
     title?: string;
     subtitle?: string;
     authors?: string[];
+    language?: string;
     industryIdentifiers?: { type?: string; identifier?: string }[];
   };
 }
@@ -510,6 +527,12 @@ export class GoogleBooksResolver {
     return Array.isArray(items) ? (items as Volume[]) : [];
   }
 
+  /** `{ language }` when the volume names one, else nothing (spread into a GbVolume). */
+  private static language(vol: Volume): { language?: string } {
+    const language = vol.volumeInfo?.language?.trim();
+    return language ? { language } : {};
+  }
+
   private static pickIsbn13(vol: Volume): string | null {
     const ids = vol.volumeInfo?.industryIdentifiers ?? [];
     return ids.find((i) => i.type === 'ISBN_13')?.identifier ?? null;
@@ -521,6 +544,42 @@ export class GoogleBooksResolver {
    * guard rejects the fuzzy leg — the caller keeps the want honestly un-added, never fabricates an id.
    */
   async resolveVolume(input: GbResolveInput): Promise<GbVolume | null> {
+    return (await this.resolveVolumeDetail(input)).volume;
+  }
+
+  /** `resolveVolume`, also reporting a volume the language check refused (issue #26). */
+  async resolveVolumeDetail(input: GbResolveInput): Promise<GbResolveDetail> {
+    const detail: GbResolveDetail = { volume: null, refused: false, refusedLanguage: null };
+    // A hit in a refused language is recorded and treated as a miss, so the next leg can find another edition.
+    const accept = (vol: GbVolume | null): GbVolume | null => {
+      if (!vol || !input.acceptLanguage || input.acceptLanguage(vol.language ?? null)) return vol;
+      detail.refused = true;
+      detail.refusedLanguage = vol.language ?? null;
+      this.log.debug(
+        { title: input.title, volumeId: vol.volumeId, language: vol.language, via: vol.via },
+        'google books: volume refused by the acquisition language check',
+      );
+      return null;
+    };
+    try {
+      detail.volume = await this.resolveLegs(input, accept);
+    } catch (error) {
+      // The ISBN leg already named an edition the check refuses, and the title leg then failed upstream (a dead
+      // quota, a 5xx). Report the refusal, not the error: an error reason lets the caller fall back to
+      // addBookByISBN with that same ISBN, which would add the refused edition. The quota latch is already set.
+      if (!detail.refused) throw error;
+      this.log.debug(
+        { title: input.title, err: error instanceof Error ? error.message : String(error) },
+        'google books: title leg failed after the ISBN leg was refused by the language check',
+      );
+    }
+    return detail;
+  }
+
+  private async resolveLegs(
+    input: GbResolveInput,
+    accept: (vol: GbVolume | null) => GbVolume | null,
+  ): Promise<GbVolume | null> {
     if (!this.enabled) return null;
     if (this.quotaLatched()) {
       // Breaker-lite: the daily quota is known-dead this pass — short-circuit before spending a request.
@@ -540,13 +599,17 @@ export class GoogleBooksResolver {
       // ISBN-leg failure EXCEPT a dead daily quota (the title leg would be dead too — re-throw that).
       try {
         const [vol] = await this.query(`isbn:${input.isbn}`, 0);
-        if (vol) {
-          return {
-            volumeId: vol.id,
-            isbn13: GoogleBooksResolver.pickIsbn13(vol) ?? input.isbn,
-            via: 'isbn',
-          };
-        }
+        const hit = accept(
+          vol
+            ? {
+                volumeId: vol.id,
+                isbn13: GoogleBooksResolver.pickIsbn13(vol) ?? input.isbn,
+                via: 'isbn',
+                ...GoogleBooksResolver.language(vol),
+              }
+            : null,
+        );
+        if (hit) return hit;
       } catch (error) {
         if (error instanceof GoogleBooksUpstreamError && error.kind === 'quota_exhausted')
           throw error;
@@ -556,11 +619,11 @@ export class GoogleBooksResolver {
         );
       }
     }
-    const primary = await this.resolveByTitle(gbQueryTitle(input.title), input);
+    const primary = accept(await this.resolveByTitle(gbQueryTitle(input.title), input));
     if (primary) return primary;
     const preColon = input.title.split(':')[0]?.trim();
     if (preColon && preColon.length >= 3 && preColon !== input.title.trim()) {
-      return this.resolveByTitle(gbQueryTitle(preColon), input);
+      return accept(await this.resolveByTitle(gbQueryTitle(preColon), input));
     }
     return null;
   }
@@ -583,6 +646,11 @@ export class GoogleBooksResolver {
     if (input.author && (vol.volumeInfo?.authors?.length ?? 0) > 0) {
       if (!gbAuthorsMatch(input.author, vol.volumeInfo?.authors ?? [])) return null;
     }
-    return { volumeId: vol.id, isbn13: GoogleBooksResolver.pickIsbn13(vol), via: 'title' };
+    return {
+      volumeId: vol.id,
+      isbn13: GoogleBooksResolver.pickIsbn13(vol),
+      via: 'title',
+      ...GoogleBooksResolver.language(vol),
+    };
   }
 }

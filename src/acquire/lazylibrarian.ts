@@ -13,8 +13,9 @@ import type { ServiceEndpoint } from '../config.js';
  * lazylibrarian.downloads:5299, BOOK_API=GoogleBooks) from a frontend-namespace probe Job, 2026-07-17:
  *
  *   - `getAllBooks` → the whole book table (one call/run, the idempotency + BookID source). Rows carry
- *     BookID (a Google Books volume id), BookName, BookIsbn, and the two per-format statuses `Status`
- *     (eBook) and `AudioStatus` (AudioBook). RELIABLE — it reads LL's own DB, no Google Books call.
+ *     BookID (a Google Books volume id), BookName, BookIsbn, BookLang, the two per-format statuses `Status`
+ *     (eBook) and `AudioStatus` (AudioBook), and the per-format import dates `BookLibrary` / `AudioLibrary`.
+ *     RELIABLE — it reads LL's own DB, no Google Books call.
  *   - `queueBook &id= &type=eBook|AudioBook` → mark that FORMAT Wanted; `searchBook &id= &type=` → fire
  *     the hunt. Both operate on a BookID already in LL's DB (no Google Books) — the reliable drive.
  *   - `addBookByISBN &isbn=` → add a book LL doesn't yet know, resolving the ISBN via LL's OWN Google
@@ -53,6 +54,35 @@ export interface LlBook {
   ebookStatus: string | null;
   /** The AUDIOBOOK status string (LL `AudioStatus`) — null when LL omits it. */
   audioStatus: string | null;
+  /** LL `BookLang` (`en`, `fr`, `Unknown`, ...): the acquisition language check reads it (issue #26). */
+  language?: string | null;
+  /**
+   * LL's per-format import date (`BookLibrary` / `AudioLibrary`) and file path (`BookFile` / `AudioFile`). Any of
+   * them set means LL holds that format, whatever its status says (issue #26). The deployed build serves the dates
+   * from `getAllBooks` but not the paths; a date is set exactly when the path is.
+   */
+  ebookLibrary?: string | null;
+  audioLibrary?: string | null;
+  ebookFile?: string | null;
+  audioFile?: string | null;
+}
+
+const LL_HELD_STATUSES = new Set(['open', 'have']);
+
+const present = (value: string | null | undefined): boolean =>
+  value != null && value.trim() !== '' && value.trim().toLowerCase() !== 'none';
+
+/**
+ * Does LazyLibrarian already hold this format? Its status is `Open` or `Have`, or it carries an import date or a file
+ * for it. LL keeps rows that read `Skipped` or `Snatched` yet hold an imported file (18 on 2026-10-06), so the status
+ * alone is not enough (issue #26).
+ */
+export function llFormatHeld(book: LlBook, format: LlFormat): boolean {
+  const status = (format === 'audiobook' ? book.audioStatus : book.ebookStatus) ?? '';
+  if (LL_HELD_STATUSES.has(status.trim().toLowerCase())) return true;
+  return format === 'audiobook'
+    ? present(book.audioLibrary) || present(book.audioFile)
+    : present(book.ebookLibrary) || present(book.ebookFile);
 }
 
 /**
@@ -181,6 +211,11 @@ export class LazyLibrarianClient implements LazyLibrarianCommands {
           : {}),
         ebookStatus: typeof r.Status === 'string' ? r.Status : null,
         audioStatus: typeof r.AudioStatus === 'string' ? r.AudioStatus : null,
+        language: stringField(r.BookLang),
+        ebookLibrary: stringField(r.BookLibrary),
+        audioLibrary: stringField(r.AudioLibrary),
+        ebookFile: stringField(r.BookFile),
+        audioFile: stringField(r.AudioFile),
       });
     }
     return books;
@@ -208,6 +243,11 @@ export class LazyLibrarianClient implements LazyLibrarianCommands {
   async searchBook(id: string, format: LlFormat): Promise<string> {
     return this.command('searchBook', { id, type: llTypeParam(format) });
   }
+}
+
+/** A string field of an LL row, or null when LL omits it or sends another type. */
+function stringField(value: unknown): string | null {
+  return typeof value === 'string' ? value : null;
 }
 
 /** Wire the LL client from the resolved endpoint (undefined when LAZYLIBRARIAN_* is not configured). */

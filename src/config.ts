@@ -1,5 +1,6 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
+import { parseAcquisitionLanguages } from './acquire/language.js';
 
 /**
  * Libretto is fully stateless (Kometa-style): there is no database.
@@ -47,6 +48,11 @@ export interface AppConfig {
   acquisitionCapPerRun: number;
   /** Spacing between LazyLibrarian write calls, ms (estate politeness). */
   acquisitionIntervalMs: number;
+  /**
+   * Languages acquisition may queue or add (LIBRETTO_ACQUISITION_LANGUAGES; issue #26): primary language codes,
+   * default `['en']`. Undefined when set to `*` / `any` / `all` (every language).
+   */
+  acquisitionLanguages: string[] | undefined;
 }
 
 function endpoint(
@@ -79,6 +85,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     googleBooksUrl: env.GOOGLE_BOOKS_URL || undefined,
     acquisitionCapPerRun: positiveInt(env.LIBRETTO_ACQUISITION_CAP_PER_RUN, 10),
     acquisitionIntervalMs: positiveInt(env.LIBRETTO_ACQUISITION_INTERVAL_MS, 3000),
+    acquisitionLanguages: parseAcquisitionLanguages(env.LIBRETTO_ACQUISITION_LANGUAGES),
   };
 }
 

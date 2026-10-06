@@ -4,8 +4,10 @@ import { normalizeIdentifier } from '../identifiers.js';
 import type { Logger } from '../logger.js';
 import { authorsAgree, normalizeTitle } from '../matching/title.js';
 import { createResolveBroker, type ResolveBroker } from '../resolve/broker.js';
+import { languagePolicy, type LanguagePolicy } from './language.js';
 import {
   createLazyLibrarianClient,
+  llFormatHeld,
   type LazyLibrarianCommands,
   type LlBook,
   type LlFormat,
@@ -25,8 +27,12 @@ import {
  *   2. For each missing work, resolve it to an LL book — conservatively, exactly like the D-04 title
  *      fallback: normalized ISBN first, then noise-stripped title (+ author guard); AMBIGUITY IS SKIPPED,
  *      never a wrong add.
- *      - Already in LL and the wanted FORMAT is Wanted/Snatched/Open/Have/Matched/Ignored → SKIP (LL is
- *        already acquiring or holds it; re-runs never duplicate).
+ *      - A row in a language the deployment does not acquire (LIBRETTO_ACQUISITION_LANGUAGES, default English;
+ *        LL's `BookLang`) is never a match: a French edition's ISBN in a member's identifiers never drives
+ *        the French book (issue #26). Its ISBN is not used to add the work either.
+ *      - Already in LL and the wanted FORMAT is Wanted/Snatched/Open/Have/Matched/Ignored, or LL holds an
+ *        imported file for it (`BookLibrary`/`AudioLibrary`, issue #26) → SKIP (LL is already acquiring or
+ *        holds it; re-runs never duplicate).
  *      - Already in LL but the FORMAT is Skipped or untracked → `queueBook` + `searchBook` for that
  *        format (the reliable, Google-Books-free drive). Kavita recipes acquire eBooks; ABS recipes
  *        acquire AudioBooks.
@@ -64,6 +70,11 @@ export interface AcquireContext {
    * of LazyLibrarian's throttled keyless `addBookByISBN`. Undefined ⇒ the prior addBookByISBN behavior.
    */
   resolve?: ResolveBroker;
+  /**
+   * The languages acquisition may queue or add (issue #26). Undefined ⇒ every language (tests); production wires
+   * it from LIBRETTO_ACQUISITION_LANGUAGES (default English).
+   */
+  languages?: LanguagePolicy;
   /** Injectable sleep so tests don't wait real time. */
   sleep?: (ms: number) => Promise<void>;
 }
@@ -94,6 +105,7 @@ export function createAcquireContext(
       capPerRun: config.acquisitionCapPerRun,
       intervalMs: config.acquisitionIntervalMs,
       resolveBroker: resolve !== undefined,
+      languages: config.acquisitionLanguages ?? 'any',
     },
     'acquisition: LazyLibrarian configured; acquisition leg armed for recipes with acquisitionEnabled',
   );
@@ -101,6 +113,7 @@ export function createAcquireContext(
     client,
     capPerRun: config.acquisitionCapPerRun,
     intervalMs: config.acquisitionIntervalMs,
+    languages: languagePolicy(config.acquisitionLanguages),
     ...(resolve ? { resolve } : {}),
   };
 }
@@ -155,27 +168,38 @@ export async function acquireMissing(
     byTitle.set(key, [...(byTitle.get(key) ?? []), book]);
   }
   const claimed = new Set<string>();
+  const languageAllowed = (book: LlBook): boolean => ctx.languages?.allows(book.language) ?? true;
 
   const sleep = ctx.sleep ?? defaultSleep;
   let actions = 0;
   let acted = false;
 
   for (const work of missing) {
-    // Resolve the missing work to an LL book: identifier-exact first, then conservative title fallback.
+    // Resolve the missing work to an LL book: identifier-exact first, then conservative title fallback. A row in
+    // a language this deployment does not acquire is set aside, never matched (issue #26).
     let book: LlBook | undefined;
+    const otherLanguage: LlBook[] = [];
+    const setAside = (row: LlBook): void => {
+      if (!otherLanguage.includes(row)) otherLanguage.push(row);
+    };
     for (const identifier of work.identifiers) {
       const hit = byIsbn.get(identifier);
-      if (hit) {
-        book = hit;
-        break;
+      if (!hit) continue;
+      if (!languageAllowed(hit)) {
+        setAside(hit);
+        continue;
       }
+      book = hit;
+      break;
     }
     if (!book) {
       // Another author's row under the title is set aside first ("Gray Dawn" by Walter Mosley never drives Stewart
       // Edward White's "The Gray Dawn", thaynes43/haynesnetwork#771), so once the member's own book is added beside it
       // the title still finds that one. Of the rows left, exactly one must remain: two are ambiguous and refused, never
       // guessed. A work or a row with no author is judged on its title alone.
-      const sameTitle = work.title ? (byTitle.get(normalizeTitle(work.title)) ?? []) : [];
+      const titleRows = work.title ? (byTitle.get(normalizeTitle(work.title)) ?? []) : [];
+      for (const row of titleRows) if (!languageAllowed(row)) setAside(row);
+      const sameTitle = titleRows.filter(languageAllowed);
       const authors = workAuthors(work);
       const candidates = sameTitle.filter((row) =>
         authorsAgree(authors, row.author ? [row.author] : undefined),
@@ -196,8 +220,29 @@ export async function acquireMissing(
       }
     }
 
-    // Decide the action WITHOUT consuming the cap, so resolution-only skips stay free.
-    const isbnKey = work.identifiers.find((id) => id.startsWith('isbn:'));
+    if (!book && otherLanguage.length > 0) {
+      log.info(
+        {
+          recipeId,
+          work: work.label,
+          otherLanguage: otherLanguage.map((row) => ({
+            bookId: row.bookId,
+            title: row.title,
+            language: row.language ?? null,
+          })),
+          allowed: ctx.languages?.allowed,
+        },
+        'acquisition: LazyLibrarian holds this work only in a language not acquired; not driving it',
+      );
+    }
+
+    // Decide the action WITHOUT consuming the cap, so resolution-only skips stay free. An ISBN of a set-aside
+    // other-language row names that edition, so it is not used to add the work.
+    const otherLanguageIsbns = new Set(
+      otherLanguage.flatMap((row) => (row.isbn ? [normalizeIdentifier(row.isbn)] : [])),
+    );
+    const identifiers = work.identifiers.filter((id) => !otherLanguageIsbns.has(id));
+    const isbnKey = identifiers.find((id) => id.startsWith('isbn:'));
     const isbn = isbnKey ? isbnKey.slice('isbn:'.length) : null;
     let action: { kind: 'drive'; book: LlBook } | { kind: 'add'; isbn: string | null } | undefined;
     if (book) {
@@ -208,6 +253,15 @@ export async function acquireMissing(
         log.info(
           { recipeId, work: work.label, bookId: book.bookId, format, status },
           'acquisition: already being acquired or held; skipping',
+        );
+        continue;
+      }
+      if (llFormatHeld(book, format)) {
+        // LL holds an imported file for this format although its status reads Skipped (issue #26).
+        counts.skipped += 1;
+        log.info(
+          { recipeId, work: work.label, bookId: book.bookId, format, status },
+          'acquisition: LazyLibrarian already holds a file for this format; skipping',
         );
         continue;
       }
@@ -252,7 +306,7 @@ export async function acquireMissing(
           'acquisition: queued + searched (LazyLibrarian now wants it)',
         );
       } else {
-        await addNewBook(recipeId, work, action.isbn, ctx, log, counts);
+        await addNewBook(recipeId, work, identifiers, action.isbn, ctx, log, counts);
       }
     } catch (error) {
       counts.errors += 1;
@@ -275,18 +329,23 @@ export async function acquireMissing(
 async function addNewBook(
   recipeId: string,
   work: WorkItem,
+  identifiers: string[],
   isbn: string | null,
   ctx: AcquireContext,
   log: Logger,
   counts: AcquisitionCounts,
 ): Promise<void> {
   if (ctx.resolve) {
+    const languages = ctx.languages;
     const { resolved, reason } = await ctx.resolve.resolve({
-      identifiers: work.identifiers,
+      identifiers,
       isbn,
       title: work.title ?? work.label,
       // The first credit only: the broker folds its authors into one inauthor: query.
       authors: workAuthors(work)?.slice(0, 1),
+      ...(languages
+        ? { acceptLanguage: (language: string | null) => languages.allows(language) }
+        : {}),
     });
     if (resolved) {
       const ack = await ctx.client.addBook(resolved.volumeId);
@@ -300,6 +359,16 @@ async function addNewBook(
           ack: ack.slice(0, 120),
         },
         'acquisition: resolve broker mapped the want to a Google-Books volume id; added via addBook; queue + search on a later run',
+      );
+      return;
+    }
+    // Only an edition in a language not acquired was found (issue #26): LazyLibrarian's addBookByISBN would
+    // resolve the same edition, so there is no fallback.
+    if (reason === 'wrong_language') {
+      counts.skipped += 1;
+      log.info(
+        { recipeId, work: work.label, reason, allowed: languages?.allowed },
+        'acquisition: resolve broker found only an edition in a language not acquired; skipping',
       );
       return;
     }

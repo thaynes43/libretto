@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { LazyLibrarianClient, LazyLibrarianError } from './lazylibrarian.js';
+import {
+  LazyLibrarianClient,
+  LazyLibrarianError,
+  llFormatHeld,
+  type LlBook,
+} from './lazylibrarian.js';
 
 /** A fetch stub that records the URLs it was called with and returns a scripted body. */
 function stubFetch(handler: (url: string) => { status?: number; body: string }) {
@@ -57,8 +62,11 @@ describe('LazyLibrarianClient', () => {
         BookID: 'Lp0szgEACAAJ',
         BookName: 'Matilda',
         BookIsbn: '024155831X',
+        BookLang: 'en',
         Status: 'Open',
         AudioStatus: 'Skipped',
+        BookLibrary: '2026-07-21T19:42:59Z',
+        AudioLibrary: null,
       },
       { BookID: 42, BookName: 'Numeric Id', BookIsbn: null, Status: 'Wanted', AudioStatus: null },
       { BookName: 'no id — dropped' },
@@ -73,6 +81,11 @@ describe('LazyLibrarianClient', () => {
       isbn: '024155831X',
       ebookStatus: 'Open',
       audioStatus: 'Skipped',
+      language: 'en',
+      ebookLibrary: '2026-07-21T19:42:59Z',
+      audioLibrary: null,
+      ebookFile: null,
+      audioFile: null,
     });
     expect(books[1]!.bookId).toBe('42'); // numeric BookID stringified
     expect(books[1]!.isbn).toBeNull();
@@ -96,7 +109,18 @@ describe('LazyLibrarianClient', () => {
     const client = new LazyLibrarianClient(opts(fetchImpl));
     const books = await client.getAllBooks();
     expect(books).toEqual([
-      { bookId: 'X', title: 'Y', isbn: null, ebookStatus: null, audioStatus: null },
+      {
+        bookId: 'X',
+        title: 'Y',
+        isbn: null,
+        ebookStatus: null,
+        audioStatus: null,
+        language: null,
+        ebookLibrary: null,
+        audioLibrary: null,
+        ebookFile: null,
+        audioFile: null,
+      },
     ]);
   });
 
@@ -112,5 +136,34 @@ describe('LazyLibrarianClient', () => {
     await expect(client.addBook('V')).rejects.toBeInstanceOf(LazyLibrarianError);
     await expect(client.addBook('V')).rejects.toThrow(/apikey=REDACTED/);
     await expect(client.addBook('V')).rejects.not.toThrow(/secret-key/);
+  });
+});
+
+describe('llFormatHeld (issue #26)', () => {
+  const row = (partial: Partial<LlBook>): LlBook => ({
+    bookId: 'B',
+    title: 'T',
+    isbn: null,
+    ebookStatus: 'Skipped',
+    audioStatus: 'Skipped',
+    ...partial,
+  });
+
+  it('reads Open and Have as held, whatever the case', () => {
+    expect(llFormatHeld(row({ ebookStatus: 'Open' }), 'ebook')).toBe(true);
+    expect(llFormatHeld(row({ audioStatus: 'have' }), 'audiobook')).toBe(true);
+    expect(llFormatHeld(row({ ebookStatus: 'Wanted' }), 'ebook')).toBe(false);
+  });
+
+  it('reads an import date or a file as held although the status says Skipped (The Last Hero)', () => {
+    const lastHero = row({ ebookLibrary: '2026-07-21T19:42:59Z', audioFile: '/books/x.m4b' });
+    expect(llFormatHeld(lastHero, 'ebook')).toBe(true);
+    expect(llFormatHeld(lastHero, 'audiobook')).toBe(true);
+  });
+
+  it('keeps the formats apart and ignores blank or None values', () => {
+    expect(llFormatHeld(row({ audioLibrary: '2026-07-21T11:03:00Z' }), 'ebook')).toBe(false);
+    expect(llFormatHeld(row({ ebookLibrary: ' ', ebookFile: 'None' }), 'ebook')).toBe(false);
+    expect(llFormatHeld(row({ ebookLibrary: null, ebookFile: null }), 'ebook')).toBe(false);
   });
 });
