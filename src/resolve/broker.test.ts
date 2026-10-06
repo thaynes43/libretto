@@ -101,4 +101,37 @@ describe('resolve broker — the acquisition language check (issue #26)', () => 
     expect(out.reason).toBe('resolved');
     expect(out.resolved?.language).toBe('fr');
   });
+
+  it('reason "wrong_language" when the ISBN leg was refused and the title leg then hits a dead quota', async () => {
+    let call = 0;
+    const fetchImpl = (async (): Promise<Response> => {
+      call += 1;
+      return call === 1
+        ? new Response(
+            JSON.stringify({
+              items: [
+                { id: 'J_DajwEACAAJ', volumeInfo: { title: 'Drame de troll', language: 'fr' } },
+              ],
+            }),
+            { status: 200 },
+          )
+        : new Response(JSON.stringify(QUOTA_BODY), { status: 429 });
+    }) as unknown as typeof fetch;
+    const out = await brokerWith(fetchImpl, { retries: 0 }).resolve({
+      isbn: '9782841721399',
+      title: 'Troll Bridge',
+      acceptLanguage: (language) => language === 'en',
+    });
+    expect(out).toEqual({ resolved: null, reason: 'wrong_language' });
+    expect(call).toBe(2);
+  });
+
+  it('a dead quota with no refusal is still reported as the quota', async () => {
+    const out = await brokerWith(statusFetch(429, QUOTA_BODY), { retries: 0 }).resolve({
+      isbn: '9780316129084',
+      title: 'Leviathan Wakes',
+      acceptLanguage: (language) => language === 'en',
+    });
+    expect(out.reason).toBe('quota_exhausted');
+  });
 });

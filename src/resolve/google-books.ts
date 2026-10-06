@@ -561,7 +561,18 @@ export class GoogleBooksResolver {
       );
       return null;
     };
-    detail.volume = await this.resolveLegs(input, accept);
+    try {
+      detail.volume = await this.resolveLegs(input, accept);
+    } catch (error) {
+      // The ISBN leg already named an edition the check refuses, and the title leg then failed upstream (a dead
+      // quota, a 5xx). Report the refusal, not the error: an error reason lets the caller fall back to
+      // addBookByISBN with that same ISBN, which would add the refused edition. The quota latch is already set.
+      if (!detail.refused) throw error;
+      this.log.debug(
+        { title: input.title, err: error instanceof Error ? error.message : String(error) },
+        'google books: title leg failed after the ISBN leg was refused by the language check',
+      );
+    }
     return detail;
   }
 
