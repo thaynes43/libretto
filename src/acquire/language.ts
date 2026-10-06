@@ -40,9 +40,50 @@ export interface LanguagePolicy {
   allows(value: string | null | undefined): boolean;
 }
 
+/** The English name of a language code, or undefined when Intl does not know the code. */
+function englishName(code: string): string | undefined {
+  try {
+    return new Intl.DisplayNames(['en'], { type: 'language', fallback: 'none' }).of(code);
+  } catch {
+    return undefined;
+  }
+}
+
+let namesToCodes: Map<string, string> | undefined;
+
+/** Every two-letter language code Intl knows, by its English and its own name (lowercased). Built once, on demand. */
+function codeForName(name: string): string | undefined {
+  if (!namesToCodes) {
+    namesToCodes = new Map();
+    const letters = 'abcdefghijklmnopqrstuvwxyz';
+    for (const a of letters) {
+      for (const b of letters) {
+        const code = a + b;
+        if (!englishName(code)) continue;
+        for (const known of languageNames(code)) {
+          if (!namesToCodes.has(known)) namesToCodes.set(known, code);
+        }
+      }
+    }
+  }
+  return namesToCodes.get(name);
+}
+
 /**
- * Parse `LIBRETTO_ACQUISITION_LANGUAGES`: a comma- or space-separated list of language codes. Unset or blank gives
- * the default (English); `*`, `any` or `all` turns the check off (undefined).
+ * One configured language as a code: a code is kept (`en-US` and `eng` give `en`), a name is looked up (`English`
+ * and `français` give `en` and `fr`). Undefined when it is neither.
+ */
+function configuredLanguage(entry: string): string | undefined {
+  const language = primaryLanguage(entry);
+  if (language === null) return undefined;
+  if (/^[a-z]{2,3}$/.test(language) && englishName(language)) return language;
+  return codeForName(language);
+}
+
+/**
+ * Parse `LIBRETTO_ACQUISITION_LANGUAGES`: a comma- or space-separated list of languages, as codes or names. An entry
+ * that is neither is dropped; unset, blank or nothing usable gives the default (English). `*`, `any` or `all` turns
+ * the check off (undefined). The resulting list is logged when acquisition starts.
  */
 export function parseAcquisitionLanguages(raw: string | undefined): string[] | undefined {
   const entries = (raw ?? '')
@@ -51,7 +92,9 @@ export function parseAcquisitionLanguages(raw: string | undefined): string[] | u
     .filter((entry) => entry.length > 0);
   if (entries.some((entry) => EVERY_LANGUAGE.has(entry.toLowerCase()))) return undefined;
   const codes = [
-    ...new Set(entries.map(primaryLanguage).filter((code): code is string => code !== null)),
+    ...new Set(
+      entries.map(configuredLanguage).filter((code): code is string => code !== undefined),
+    ),
   ];
   return codes.length > 0 ? codes : [...DEFAULT_ACQUISITION_LANGUAGES];
 }

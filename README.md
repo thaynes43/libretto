@@ -94,7 +94,7 @@ Per missing work, per run:
 
 ### Languages
 
-`LIBRETTO_ACQUISITION_LANGUAGES` lists the languages acquisition may queue or add, as language codes (default `en`; `*` turns the check off). It reads LazyLibrarian's `BookLang` for a book already in the database and the Google Books volume's `language` for a new one. A region (`en-US`), an ISO 639-2 code (`eng`) and the language's name (`English`) count as the same language. A book whose language is unknown (blank, `Unknown`, `und`, `xxx`) is allowed: LazyLibrarian labels books it could not place that way, and refusing them would stop acquisition of books nobody has checked.
+`LIBRETTO_ACQUISITION_LANGUAGES` lists the languages acquisition may queue or add, as language codes or names (`en`, `English`; default `en`; `*` turns the check off; an entry that is neither is dropped, and the list in force is logged when acquisition starts). It reads LazyLibrarian's `BookLang` for a book already in the database and the Google Books volume's `language` for a new one. A region (`en-US`), an ISO 639-2 code (`eng`) and the language's name (`English`) count as the same language. A book whose language is unknown (blank, `Unknown`, `und`, `xxx`) is allowed: LazyLibrarian labels books it could not place that way, and refusing them would stop acquisition of books nobody has checked.
 
 ### Pacing
 
@@ -202,7 +202,7 @@ Environment variables (all connection settings are validated at use, not at boot
 | `GOOGLE_BOOKS_API_KEY`                       | Google Books API key for the ISBN-first resolve broker (the M3 resolution fix). Unset ⇒ the broker is disabled and acquisition falls back to `addBookByISBN`. `GOOGLE_BOOKS_URL` overrides the base URL for tests. |
 | `LIBRETTO_ACQUISITION_CAP_PER_RUN`           | Max acquisition actions (LazyLibrarian adds + queue-drives) per recipe run. Default `10`.                                                                                                                          |
 | `LIBRETTO_ACQUISITION_INTERVAL_MS`           | Spacing between LazyLibrarian write calls, in ms (estate politeness). Default `3000`.                                                                                                                              |
-| `LIBRETTO_ACQUISITION_LANGUAGES`             | Languages acquisition may queue or add, as comma-separated language codes. Default `en`; `*` allows every language. Unknown languages are always allowed. See [Languages](#languages).                             |
+| `LIBRETTO_ACQUISITION_LANGUAGES`             | Languages acquisition may queue or add, as comma-separated language codes or names. Default `en`; `*` allows every language. Unknown languages are always allowed. See [Languages](#languages).                    |
 | `NYT_API_KEY`                                | [NYT Books API](https://developer.nytimes.com/docs/books-product/1/overview) key for the `nyt_list` builder. Free tier is roughly 500 requests/day and 5/minute; Libretto paces and caches accordingly.            |
 
 ### Notes on the target accounts

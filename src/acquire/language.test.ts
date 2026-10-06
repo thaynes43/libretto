@@ -34,6 +34,18 @@ describe('parseAcquisitionLanguages', () => {
     expect(parseAcquisitionLanguages('en, de fr-CA,eng')).toEqual(['en', 'de', 'fr']);
   });
 
+  it('turns a language name into its code', () => {
+    expect(parseAcquisitionLanguages('English')).toEqual(['en']);
+    expect(parseAcquisitionLanguages('english, Français, German')).toEqual(['en', 'fr', 'de']);
+    expect(languagePolicy(parseAcquisitionLanguages('English')).allows('en')).toBe(true);
+  });
+
+  it('drops an entry that is neither a code nor a name, and falls back to English when none is left', () => {
+    expect(parseAcquisitionLanguages('de, Klingonish')).toEqual(['de']);
+    expect(parseAcquisitionLanguages('Klingonish')).toEqual(['en']);
+    expect(parseAcquisitionLanguages('zz')).toEqual(['en']);
+  });
+
   it('turns the check off for *, any or all', () => {
     expect(parseAcquisitionLanguages('*')).toBeUndefined();
     expect(parseAcquisitionLanguages('ANY')).toBeUndefined();
