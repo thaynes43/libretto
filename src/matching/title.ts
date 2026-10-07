@@ -106,6 +106,8 @@ export interface TitleCandidate {
 export interface TitleHit {
   item: TitleCandidate;
   claim: string;
+  /** The full library title the conservative matcher actually confirmed. */
+  title: string;
 }
 
 /** The work side of a decorated-title match (issue thaynes43/haynesnetwork#759). */
@@ -612,5 +614,5 @@ function pick(
     .filter((entry) => !claimed.has(entry.claim) && authorsAgree(authors, entry.item.authors))
     .sort(byPreference);
   const hit = candidates[0];
-  return hit ? { item: hit.item, claim: hit.claim } : undefined;
+  return hit ? { item: hit.item, claim: hit.claim, title: hit.raw } : undefined;
 }

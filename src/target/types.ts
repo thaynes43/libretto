@@ -12,6 +12,15 @@
  * description field is API-writable).
  */
 
+import type { WorkItem } from '../builders/index.js';
+
+/** A canonical work bound to one target item, including the exact title the matcher confirmed. */
+export interface MatchedWork {
+  itemId: string;
+  work: WorkItem;
+  confirmedTitle?: string;
+}
+
 export interface TargetItem {
   /** Target-side item id (Kavita series id, ABS library item id). */
   id: string;
@@ -82,11 +91,15 @@ export interface CreateCollectionInput {
    * targets may ignore it.
    */
   ordered: boolean;
+  matchedWorks?: MatchedWork[];
 }
 
 export interface UpdateCollectionInput {
   /** Full ordered membership to write (replace semantics). */
   itemIds: string[];
+  /** Library context and canonical identities for work-grained reading lists. */
+  libraryId?: string;
+  matchedWorks?: MatchedWork[];
   /** Nested membership also obeys append's no-removal contract. Omitted means sync. */
   syncMode?: 'append' | 'sync';
   /**

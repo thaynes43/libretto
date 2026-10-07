@@ -61,6 +61,7 @@ export async function reconcileTarget(
   const options = recipeMatchOptions(recipe);
   const grain = options.grain;
   const {
+    matchedWorks,
     matchedIds,
     matchedSeen,
     matchedByTitle,
@@ -68,6 +69,10 @@ export async function reconcileTarget(
     compilationWorks,
     unnumberedWorks,
   } = matchWorks(works, items, options);
+  const bookMatches =
+    recipe.variables.ordered && grain !== 'series' && target.server === 'kavita'
+      ? matchedWorks
+      : undefined;
   const missing = missingWorks.map((work) => work.label);
   if (matchedByTitle > 0) {
     log.info(
@@ -124,6 +129,7 @@ export async function reconcileTarget(
       ...(recipe.variables.tag === undefined ? {} : { tags: [recipe.variables.tag] }),
       itemIds: matchedIds,
       ordered: recipe.variables.ordered,
+      ...(bookMatches ? { matchedWorks: bookMatches } : {}),
     });
     log.info({ recipeId: recipe.id, server, collectionId: created.id }, 'created collection');
     written = created.itemIds.length;
@@ -164,7 +170,9 @@ export async function reconcileTarget(
     if (membershipChanged || markerChanged || checkChapters) {
       await target.updateCollection(collection.id, {
         itemIds: desired,
+        libraryId,
         syncMode: recipe.variables.syncMode,
+        ...(bookMatches ? { matchedWorks: bookMatches } : {}),
         ...(markerChanged
           ? { description: withUpdatedMarker(collection.description, recipe.id, recipe.category) }
           : {}),

@@ -271,6 +271,281 @@ describe('KavitaTarget', () => {
   });
 
   describe('ordered recipes: reading lists', () => {
+    const bookContext = (ids: string[]) => ({
+      libraryId: '2',
+      matchedWorks: ids.map((itemId) => ({
+        itemId,
+        work:
+          itemId === '15'
+            ? {
+                label: 'Outlander',
+                title: 'Outlander',
+                identifiers: [],
+                credits: ['Diana Gabaldon'],
+              }
+            : {
+                label: itemId === '11' ? 'Leviathan Wakes' : "Caliban's War",
+                identifiers: [itemId === '11' ? 'isbn:9780316129084' : 'isbn:9780316129060'],
+              },
+      })),
+    });
+    const clareWork = {
+      label: 'City of Bones',
+      title: 'City of Bones',
+      identifiers: ['isbn:9781406331417'],
+      credits: ['Cassandra Clare'],
+    };
+    function seedCity(stub: KavitaStub) {
+      stub.seedSeries({
+        id: 160,
+        name: 'City of Bones',
+        libraryId: 2,
+        pages: 700,
+        chapterIds: [184, 185],
+        chapterIsbns: ['9781406331417', null],
+        chapters: [
+          { titleName: 'City of Bones', writers: ['Cassandra Clare'] },
+          { titleName: 'City of Bones', writers: ['Martha Wells'] },
+        ],
+      });
+    }
+
+    it('refuses ordered Books writes without canonical context or a known library type', async () => {
+      const id = stub.seedReadingList({
+        title: 'Books',
+        summary: buildCollectionDescription('books'),
+        promoted: true,
+        seriesIds: [11],
+      });
+      const original = stub.getReadingList(id)!.items;
+      await expect(
+        target.updateCollection(`readinglist:${id}`, { itemIds: ['12'], libraryId: '2' }),
+      ).rejects.toThrow('canonical book identities missing');
+      await expect(
+        target.updateCollection(`readinglist:${id}`, {
+          itemIds: [],
+          libraryId: '2',
+          matchedWorks: [],
+        }),
+      ).rejects.toThrow('canonical book identities missing');
+      await expect(
+        target.updateCollection(`readinglist:${id}`, { itemIds: ['12'] }),
+      ).rejects.toThrow('library identity missing');
+      await expect(
+        target.updateCollection(`readinglist:${id}`, {
+          itemIds: ['12'],
+          libraryId: '999',
+          matchedWorks: bookContext(['12']).matchedWorks,
+        }),
+      ).rejects.toThrow('incomplete library type read');
+      await expect(
+        target.createCollection({
+          libraryId: '2',
+          name: 'Books',
+          ordered: true,
+          description: '',
+          itemIds: ['12'],
+        }),
+      ).rejects.toThrow('canonical book identities missing');
+      stub.seedLibrary(99, 'Unknown future type', 99);
+      await expect(
+        target.updateCollection(`readinglist:${id}`, {
+          itemIds: ['12'],
+          libraryId: '99',
+          matchedWorks: bookContext(['12']).matchedWorks,
+        }),
+      ).rejects.toThrow('incomplete library type read');
+      expect(stub.getReadingList(id)!.items).toEqual(original);
+      expect(
+        stub.requests.some((r) =>
+          /update-by-|delete-item|update-position|ReadingList\/create/.test(r),
+        ),
+      ).toBe(false);
+    });
+
+    it('repairs a complete same-title foreign chapter without replacing the valid item', async () => {
+      seedCity(stub);
+      const recipe = makeRecipe({ id: 'mortal', targets: [{ server: 'kavita', libraryId: '2' }] });
+      const id = stub.seedReadingList({
+        title: 'Mortal',
+        summary: buildCollectionDescription('mortal'),
+        promoted: true,
+        seriesIds: [160],
+      });
+      const original = stub.getReadingList(id)!.items[0]!;
+      await reconcileTarget(recipe, recipe.targets[0]!, target, [clareWork], silentLogger);
+      expect(stub.getReadingList(id)!.items).toEqual([original]);
+      expect(stub.requests.some((r) => r.includes('update-by-series'))).toBe(false);
+    });
+
+    it('creates a reading list using precise chapter adds, never adding the foreign chapter', async () => {
+      seedCity(stub);
+      const recipe = makeRecipe({ id: 'mortal', targets: [{ server: 'kavita', libraryId: '2' }] });
+      await reconcileTarget(recipe, recipe.targets[0]!, target, [clareWork], silentLogger);
+      const list = (await target.listCollections('2')).find(
+        (collection) => recipeIdFromDescription(collection.description) === 'mortal',
+      )!;
+      const id = Number(list.id.split(':')[1]);
+      expect(stub.getReadingList(id)!.items.map((item) => item.chapterId)).toEqual([184]);
+      expect(stub.requests.filter((r) => r.includes('update-by-chapter'))).toHaveLength(1);
+      expect(stub.requests.some((r) => r.includes('update-by-series'))).toBe(false);
+    });
+
+    it('unions canonical books in an old series while preserving interleaved source order and copies', async () => {
+      stub.seedSeries({
+        id: 161,
+        name: 'Old umbrella',
+        libraryId: 2,
+        pages: 900,
+        chapterIds: [16101, 16103, 16104, 16199],
+        chapterIsbns: [null, null, null, null],
+        chapters: [
+          { titleName: 'First book', writers: ['Writer One'] },
+          { titleName: 'Third book', writers: ['Writer One'] },
+          { titleName: 'Third book', writers: ['Writer One'] },
+          { titleName: 'Foreign book', writers: ['Other Author'] },
+        ],
+      });
+      const first = {
+        label: 'First book',
+        title: 'First book',
+        identifiers: [],
+        credits: ['Writer One'],
+      };
+      const third = { ...first, label: 'Third book', title: 'Third book' };
+      const id = stub.seedReadingList({
+        title: 'Mixed',
+        summary: buildCollectionDescription('mixed'),
+        promoted: true,
+        seriesIds: [161, 11],
+      });
+      const recipe = makeRecipe({ id: 'mixed', targets: [{ server: 'kavita', libraryId: '2' }] });
+      await reconcileTarget(
+        recipe,
+        recipe.targets[0]!,
+        target,
+        [first, { identifiers: ['isbn:9780316129084'], label: 'Second' }, third],
+        silentLogger,
+      );
+      expect(stub.getReadingList(id)!.items.map((item) => item.chapterId)).toEqual([
+        16101, 11000, 16103, 16104,
+      ]);
+    });
+
+    it('preserves existing items when a chapter identity is unknown, before any mutation', async () => {
+      seedCity(stub);
+      stub.setChapterTitle(160, 1, '');
+      const id = stub.seedReadingList({
+        title: 'Mortal',
+        summary: buildCollectionDescription('mortal'),
+        promoted: true,
+        seriesIds: [160, 11],
+      });
+      const original = stub.getReadingList(id)!.items;
+      await expect(
+        target.updateCollection(`readinglist:${id}`, {
+          itemIds: ['160'],
+          libraryId: '2',
+          matchedWorks: [{ itemId: '160', work: clareWork }],
+        }),
+      ).rejects.toThrow('incomplete book identities');
+      expect(stub.getReadingList(id)!.items).toEqual(original);
+      expect(stub.requests.some((r) => /update-by-|delete-item|update-position/.test(r))).toBe(
+        false,
+      );
+    });
+
+    it('does not create an empty list when the matched book cannot be verified freshly', async () => {
+      seedCity(stub);
+      stub.setChapterIsbn(160, 0, null);
+      stub.setChapterTitle(160, 0, '');
+      await expect(
+        target.createCollection({
+          libraryId: '2',
+          name: 'Mortal',
+          description: buildCollectionDescription('mortal'),
+          ordered: true,
+          itemIds: ['160'],
+          matchedWorks: [{ itemId: '160', work: clareWork }],
+        }),
+      ).rejects.toThrow('incomplete book identities');
+      expect(stub.requests.some((r) => r.includes('/api/ReadingList/create'))).toBe(false);
+    });
+
+    it('preserves old items if identities change during verified chapter additions', async () => {
+      seedCity(stub);
+      const id = stub.seedReadingList({
+        title: 'Mortal',
+        summary: buildCollectionDescription('mortal'),
+        promoted: true,
+        seriesIds: [11],
+      });
+      const original = stub.getReadingList(id)!.items[0]!;
+      stub.afterChapterAdd = () => stub.setChapterTitle(160, 1, 'Changed during scan');
+      await expect(
+        target.updateCollection(`readinglist:${id}`, {
+          itemIds: ['160'],
+          libraryId: '2',
+          matchedWorks: [{ itemId: '160', work: clareWork }],
+        }),
+      ).rejects.toThrow('chapters changed during reconcile');
+      expect(stub.getReadingList(id)!.items).toContainEqual(original);
+      expect(stub.requests.some((r) => r.includes('delete-item'))).toBe(false);
+    });
+
+    it('append adds verified chapters while retaining old items and excluding new foreign chapters', async () => {
+      seedCity(stub);
+      const id = stub.seedReadingList({
+        title: 'Append',
+        summary: buildCollectionDescription('append'),
+        promoted: true,
+        seriesIds: [11, 160],
+      });
+      const original = stub.getReadingList(id)!.items;
+      stub.setSeriesChapterIds(160, [184, 185, 186, 187]);
+      stub.setChapterIsbn(160, 2, '9781406331417');
+      stub.setChapterTitle(160, 3, 'City of Bones');
+      stub.setChapterWriters(160, 3, ['Martha Wells']);
+      await target.updateCollection(`readinglist:${id}`, {
+        itemIds: ['11', '160'],
+        libraryId: '2',
+        syncMode: 'append',
+        matchedWorks: [{ itemId: '160', work: clareWork }],
+      });
+      expect(stub.getReadingList(id)!.items.slice(0, original.length)).toEqual(original);
+      expect(stub.getReadingList(id)!.items.map((item) => item.chapterId)).toEqual([
+        11000, 184, 185, 186,
+      ]);
+      expect(stub.requests.some((r) => r.includes('delete-item'))).toBe(false);
+    });
+
+    it('keeps whole-series membership for non-Books library types even with work matches', async () => {
+      stub.seedLibrary(4, 'Comics', 0);
+      stub.seedSeries({
+        id: 170,
+        name: 'Comic',
+        libraryId: 4,
+        pages: 20,
+        chapterIds: [17001, 17002],
+        chapterIsbns: [null, null],
+      });
+      const created = await target.createCollection({
+        libraryId: '4',
+        name: 'Comic',
+        description: buildCollectionDescription('comic'),
+        tags: [],
+        ordered: true,
+        itemIds: ['170'],
+        matchedWorks: [{ itemId: '170', work: clareWork }],
+      });
+      expect(
+        stub.getReadingList(Number(created.id.split(':')[1]))!.items.map((item) => item.chapterId),
+      ).toEqual([17001, 17002]);
+      expect(stub.requests.some((r) => r.includes('update-by-series'))).toBe(true);
+      // A series-grain/comic caller needs the library type, but no canonical book context.
+      await target.updateCollection(created.id, { itemIds: ['170'], libraryId: '4' });
+    });
+
     it('reconciles replacement and added chapters when the ordered series ids are unchanged', async () => {
       const recipe = makeRecipe({ id: 'ordered', targets: [{ server: 'kavita', libraryId: '2' }] });
       const id = stub.seedReadingList({
@@ -283,6 +558,7 @@ describe('KavitaTarget', () => {
       // Prime the identifier cache, then model a scan changing only chapter ids + scan time.
       await target.listItems('2');
       stub.setSeriesChapterIds(11, [11050, 11051]);
+      stub.setChapterIsbn(11, 1, '9780316129084');
       stub.scanSeries(11, '2026-10-07T22:00:00Z');
       const works = [
         { identifiers: ['isbn:9780316129084'], label: 'Leviathan Wakes' },
@@ -300,7 +576,7 @@ describe('KavitaTarget', () => {
       expect(
         stub.requests
           .slice(beforeRepeat)
-          .filter((r) => /update-by-series|delete-item|update-position/.test(r)),
+          .filter((r) => /update-by-(?:series|chapter)|delete-item|update-position/.test(r)),
       ).toEqual([]);
     });
 
@@ -314,11 +590,16 @@ describe('KavitaTarget', () => {
       const original = stub.getReadingList(id)!.items;
       stub.setSeriesDetailIncomplete(12, true);
       await expect(
-        target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '12'] }),
+        target.updateCollection(`readinglist:${id}`, {
+          itemIds: ['11', '12'],
+          ...bookContext(['11', '12']),
+        }),
       ).rejects.toThrow('incomplete chapter read');
       expect(stub.getReadingList(id)!.items).toEqual(original);
       expect(
-        stub.requests.filter((r) => /update-by-series|delete-item|update-position/.test(r)),
+        stub.requests.filter((r) =>
+          /update-by-(?:series|chapter)|delete-item|update-position/.test(r),
+        ),
       ).toEqual([]);
     });
 
@@ -333,7 +614,10 @@ describe('KavitaTarget', () => {
       stub.setSeriesChapterIds(11, [11050]);
       stub.suppressChapterAdds = true;
       await expect(
-        target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '12'] }),
+        target.updateCollection(`readinglist:${id}`, {
+          itemIds: ['11', '12'],
+          ...bookContext(['11', '12']),
+        }),
       ).rejects.toThrow('chapter additions not confirmed');
       expect(stub.getReadingList(id)!.items).toEqual(original);
       expect(stub.requests.filter((r) => r.includes('delete-item'))).toHaveLength(0);
@@ -351,18 +635,26 @@ describe('KavitaTarget', () => {
         stub.getReadingList(id)!.items.map((item) => [item.chapterId, item.id]),
       );
       stub.setSeriesChapterIds(15, [15002, 15000, 15001]);
-      await target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '15'] });
+      stub.setChapterTitle(15, 2, 'Outlander');
+      stub.setChapterWriters(15, 2, ['Diana Gabaldon']);
+      await target.updateCollection(`readinglist:${id}`, {
+        itemIds: ['11', '15'],
+        ...bookContext(['11', '15']),
+      });
       const repaired = stub.getReadingList(id)!.items;
       expect(repaired.map((item) => item.chapterId)).toEqual([11000, 15002, 15000, 15001]);
       for (const item of repaired)
         if (originals.has(item.chapterId)) expect(item.id).toBe(originals.get(item.chapterId));
       const beforeRepeat = stub.requests.length;
-      await target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '15'] });
+      await target.updateCollection(`readinglist:${id}`, {
+        itemIds: ['11', '15'],
+        ...bookContext(['11', '15']),
+      });
       expect(stub.getReadingList(id)!.items).toEqual(repaired);
       expect(
         stub.requests
           .slice(beforeRepeat)
-          .filter((r) => /update-by-series|delete-item|update-position/.test(r)),
+          .filter((r) => /update-by-(?:series|chapter)|delete-item|update-position/.test(r)),
       ).toEqual([]);
     });
 
@@ -377,7 +669,10 @@ describe('KavitaTarget', () => {
       stub.setSeriesChapterIds(11, [11050]);
       stub.afterChapterAdd = () => stub.setSeriesChapterIds(11, [11099]);
       await expect(
-        target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '12'] }),
+        target.updateCollection(`readinglist:${id}`, {
+          itemIds: ['11', '12'],
+          ...bookContext(['11', '12']),
+        }),
       ).rejects.toThrow('chapters changed during reconcile');
       for (const item of original) expect(stub.getReadingList(id)!.items).toContainEqual(item);
       expect(stub.requests.filter((r) => r.includes('delete-item'))).toHaveLength(0);
@@ -392,7 +687,11 @@ describe('KavitaTarget', () => {
       });
       const original = stub.getReadingList(id)!.items[0]!;
       stub.setSeriesChapterIds(11, [11050]);
-      await target.updateCollection(`readinglist:${id}`, { itemIds: ['11'], syncMode: 'append' });
+      await target.updateCollection(`readinglist:${id}`, {
+        itemIds: ['11'],
+        syncMode: 'append',
+        ...bookContext(['11']),
+      });
       expect(stub.getReadingList(id)!.items.map((item) => item.chapterId)).toEqual([11000, 11050]);
       expect(stub.getReadingList(id)!.items[0]).toEqual(original);
       expect(stub.requests.filter((r) => r.includes('delete-item'))).toHaveLength(0);
@@ -400,10 +699,10 @@ describe('KavitaTarget', () => {
 
     it('creates a reading list with the marker and appends series in source order', async () => {
       const created = await target.createCollection({
-        libraryId: '2',
         name: 'Expanse In Order',
         description: buildCollectionDescription('expanse-ordered'),
         itemIds: ['12', '11'],
+        ...bookContext(['12', '11']),
         ordered: true,
       });
       expect(created.kind).toBe('kavita_reading_list');
@@ -442,12 +741,13 @@ describe('KavitaTarget', () => {
       });
       const updated = await target.updateCollection(`readinglist:${id}`, {
         itemIds: ['12', '11'],
+        ...bookContext(['12', '11']),
       });
       expect(updated.itemIds).toEqual(['12', '11']);
       expect(stub.getReadingList(id)!.seriesOrder).toEqual([12, 11]);
       const calls = stub.requests;
       expect(calls.filter((r) => r.includes('delete-item')).length).toBeGreaterThan(0);
-      expect(calls.filter((r) => r.includes('update-by-series')).length).toBeGreaterThan(0);
+      expect(calls.filter((r) => r.includes('update-by-chapter')).length).toBeGreaterThan(0);
       expect(calls.filter((r) => r.includes('update-position')).length).toBeGreaterThan(0);
     });
 
@@ -458,7 +758,10 @@ describe('KavitaTarget', () => {
         promoted: true,
         seriesIds: [11, 12],
       });
-      await target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '12'] });
+      await target.updateCollection(`readinglist:${id}`, {
+        itemIds: ['11', '12'],
+        ...bookContext(['11', '12']),
+      });
       expect(stub.requests.filter((r) => r.includes('update-position'))).toHaveLength(0);
     });
   });

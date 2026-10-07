@@ -3,7 +3,7 @@ import { findCompilations, isCompilationTitle, listsOneSeries } from './compilat
 import { findUnnumbered } from './unnumbered.js';
 import { coreTitles, normalizeTitle, TitleIndex } from '../matching/title.js';
 import { isSeriesGrain, type Recipe } from '../recipes/schema.js';
-import type { TargetItem } from '../target/types.js';
+import type { MatchedWork, TargetItem } from '../target/types.js';
 
 /**
  * The identifier-first, title-fallback matcher shared by the reconciler (which writes the collection)
@@ -12,6 +12,8 @@ import type { TargetItem } from '../target/types.js';
  * endpoint reports, resolved by the identical rules (DESIGN-037 D-04).
  */
 export interface MatchResult {
+  /** Every matched canonical work, including several books in the same target series. */
+  matchedWorks: MatchedWork[];
   /** Target item ids matched, in work order (identifier match then conservative title fallback). */
   matchedIds: string[];
   /** Set of matched target item ids (a run never binds two works to one item). */
@@ -187,6 +189,7 @@ export function matchWorks(
   const claimed = new Set<string>();
 
   const matchedIds: string[] = [];
+  const matchedWorks: MatchedWork[] = [];
   const matchedSeen = new Set<string>();
   const missingWorks: WorkItem[] = [];
   const compilationWorks: WorkItem[] = [];
@@ -202,6 +205,7 @@ export function matchWorks(
   for (const work of works) {
     let via: MatchVia;
     let item: TargetItem | undefined;
+    let confirmedTitle: string | undefined;
     if (seriesGrain) {
       const hit = nameIndex!.find(work.title, work.authors, claimed);
       if (hit) {
@@ -249,6 +253,7 @@ export function matchWorks(
         if (hit) {
           claimed.add(hit.claim);
           item = items.find((one) => one.id === hit.item.id);
+          confirmedTitle = hit.title;
           // Flag an author-guarded title match distinctly (ADR-076 C-07): a work that carries its
           // own author (e.g. a { title, author } static entry) matched via title_author.
           via = alias
@@ -260,6 +265,8 @@ export function matchWorks(
       }
     }
 
+    if (item)
+      matchedWorks.push({ itemId: item.id, work, ...(confirmedTitle ? { confirmedTitle } : {}) });
     if (!item) {
       (compilations.has(work)
         ? compilationWorks
@@ -280,6 +287,7 @@ export function matchWorks(
   }
 
   return {
+    matchedWorks,
     matchedIds,
     matchedSeen,
     matchedByTitle,
