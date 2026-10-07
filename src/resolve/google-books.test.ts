@@ -601,7 +601,12 @@ describe('GoogleBooksResolver language check (issue #26)', () => {
       author: 'Terry Pratchett',
       acceptLanguage: englishOnly,
     });
-    expect(detail).toEqual({ volume: null, refused: true, refusedLanguage: 'fr' });
+    expect(detail).toEqual({
+      volume: null,
+      refused: true,
+      isbnLegFailed: false,
+      refusedLanguage: 'fr',
+    });
   });
 
   it('accepts a volume with no language', async () => {

@@ -64,17 +64,95 @@ export function isbnFromIdentifiers(identifiers: readonly string[] | undefined):
   return hit ? hit.slice('isbn:'.length) : null;
 }
 
+/** Default no_match memory: 24 hours (owner ruling 2026-10-07, issue #34). */
+export const DEFAULT_NO_MATCH_TTL_MS = 24 * 60 * 60 * 1000;
+/** Hard bound on remembered misses, so a caller feeding endless distinct wants cannot grow the map without limit. */
+const MAX_NO_MATCH_ENTRIES = 5000;
+
+export interface BrokerOptions {
+  /** How long an honest `no_match` is remembered, ms. 0 disables the cache. Default 24h. */
+  noMatchTtlMs?: number | undefined;
+  /** Clock seam for tests. */
+  nowImpl?: (() => number) | undefined;
+}
+
+/**
+ * The cache key of a want: the same (isbn, title, author) the resolver queries with, folded so trivial spelling
+ * differences (case, diacritics, punctuation, spacing) share one entry. Unlike `normalizeTitle` it keeps bracketed
+ * text, because the resolver's volume guard reads "[09]" and "(Book 2)" and two volumes must never share a miss.
+ */
+function noMatchKey(isbn: string | null, title: string, author: string | null): string {
+  const fold = (raw: string): string =>
+    raw
+      .normalize('NFKD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .trim();
+  return JSON.stringify([
+    isbn ? isbn.replace(/[^0-9xX]/g, '').toUpperCase() : '',
+    fold(title),
+    author ? fold(author) : '',
+  ]);
+}
+
 class GoogleBooksBroker implements ResolveBroker {
+  /** key -> epoch ms the remembered miss expires. In-process only; a restart clears it. */
+  private readonly noMatchUntil = new Map<string, number>();
+  private cacheHits = 0;
+  private readonly noMatchTtlMs: number;
+  private readonly nowImpl: () => number;
+
   constructor(
     private readonly resolver: GoogleBooksResolver,
     private readonly log: Logger,
-  ) {}
+    options: BrokerOptions = {},
+  ) {
+    this.noMatchTtlMs = options.noMatchTtlMs ?? DEFAULT_NO_MATCH_TTL_MS;
+    this.nowImpl = options.nowImpl ?? Date.now;
+  }
+
+  private rememberNoMatch(key: string): void {
+    if (this.noMatchTtlMs <= 0) return;
+    const now = this.nowImpl();
+    // Prune on write: drop every expired entry, then the oldest if a flood of distinct wants still overfills it.
+    for (const [k, until] of this.noMatchUntil) {
+      if (until <= now) this.noMatchUntil.delete(k);
+    }
+    this.noMatchUntil.delete(key);
+    this.noMatchUntil.set(key, now + this.noMatchTtlMs);
+    while (this.noMatchUntil.size > MAX_NO_MATCH_ENTRIES) {
+      const oldest = this.noMatchUntil.keys().next().value;
+      if (oldest === undefined) break;
+      this.noMatchUntil.delete(oldest);
+    }
+  }
 
   async resolve(input: ResolveInput): Promise<ResolveOutcome> {
     const isbn = input.isbn ?? isbnFromIdentifiers(input.identifiers);
     const author = input.authors && input.authors.length > 0 ? input.authors.join(' ') : null;
+    const key = noMatchKey(isbn, input.title, author);
+    if (this.noMatchTtlMs > 0) {
+      const until = this.noMatchUntil.get(key);
+      if (until !== undefined) {
+        if (until > this.nowImpl()) {
+          this.cacheHits += 1;
+          // info, not debug: this line is how the quota saving is observed (zero Google Books requests were made).
+          this.log.info(
+            { title: input.title, cacheHits: this.cacheHits, cached: this.noMatchUntil.size },
+            'resolve broker: no_match answered from cache (no Google Books request)',
+          );
+          return { resolved: null, reason: 'no_match' };
+        }
+        this.noMatchUntil.delete(key);
+      }
+    }
     try {
-      const { volume: vol, refused } = await this.resolver.resolveVolumeDetail({
+      const {
+        volume: vol,
+        refused,
+        isbnLegFailed,
+      } = await this.resolver.resolveVolumeDetail({
         isbn,
         title: input.title,
         author,
@@ -89,7 +167,9 @@ class GoogleBooksBroker implements ResolveBroker {
       }
       // Only an edition in a refused language was found: nothing to add, and no ISBN fallback either.
       if (refused) return { resolved: null, reason: 'wrong_language' };
-      // A genuine Google Books no-match (200 totalItems:0 / a guard reject) — honestly nothing to add.
+      // A genuine Google Books no-match (200 totalItems:0 / a guard reject) — honestly nothing to add. Only this
+      // outcome is remembered, and not when the ISBN leg never answered (a transient failure is not a miss).
+      if (!isbnLegFailed) this.rememberNoMatch(key);
       return { resolved: null, reason: 'no_match' };
     } catch (error) {
       // The broker is best-effort: a GB failure is an honest null (the caller falls back), never a throw —
@@ -111,8 +191,12 @@ class GoogleBooksBroker implements ResolveBroker {
 }
 
 /** Build a broker over an explicit resolver (test seam; production wires it via createResolveBroker). */
-export function brokerFromResolver(resolver: GoogleBooksResolver, log: Logger): ResolveBroker {
-  return new GoogleBooksBroker(resolver, log);
+export function brokerFromResolver(
+  resolver: GoogleBooksResolver,
+  log: Logger,
+  options: BrokerOptions = {},
+): ResolveBroker {
+  return new GoogleBooksBroker(resolver, log, options);
 }
 
 /**
@@ -128,5 +212,5 @@ export function createResolveBroker(config: AppConfig, log: Logger): ResolveBrok
   });
   if (!resolver.enabled) return undefined;
   log.info('resolve broker: Google Books configured; ISBN-first resolution armed for acquisition');
-  return new GoogleBooksBroker(resolver, log);
+  return new GoogleBooksBroker(resolver, log, { noMatchTtlMs: config.resolveNoMatchTtlMs });
 }

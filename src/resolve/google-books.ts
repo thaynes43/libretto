@@ -287,6 +287,11 @@ export interface GbResolveDetail {
   refused: boolean;
   /** The language of the last volume the check refused, when it named one. */
   refusedLanguage: string | null;
+  /**
+   * True when the ISBN leg failed transiently (a 5xx, a timeout) and the title legs ran without it. A miss after
+   * that is not an honest no-match: the ISBN leg never answered, so the broker must not remember it as one.
+   */
+  isbnLegFailed: boolean;
 }
 
 export interface GbVolume {
@@ -575,7 +580,12 @@ export class GoogleBooksResolver {
 
   /** `resolveVolume`, also reporting a volume the language check refused (issue #26). */
   async resolveVolumeDetail(input: GbResolveInput): Promise<GbResolveDetail> {
-    const detail: GbResolveDetail = { volume: null, refused: false, refusedLanguage: null };
+    const detail: GbResolveDetail = {
+      volume: null,
+      refused: false,
+      refusedLanguage: null,
+      isbnLegFailed: false,
+    };
     // A hit in a refused language is recorded and treated as a miss, so the next leg can find another edition.
     const accept = (vol: GbVolume | null): GbVolume | null => {
       if (!vol || !input.acceptLanguage || input.acceptLanguage(vol.language ?? null)) return vol;
@@ -588,7 +598,7 @@ export class GoogleBooksResolver {
       return null;
     };
     try {
-      detail.volume = await this.resolveLegs(input, accept);
+      detail.volume = await this.resolveLegs(input, accept, detail);
     } catch (error) {
       // The ISBN leg already named an edition the check refuses, and the title leg then failed upstream (a dead
       // quota, a 5xx). Report the refusal, not the error: an error reason lets the caller fall back to
@@ -605,6 +615,7 @@ export class GoogleBooksResolver {
   private async resolveLegs(
     input: GbResolveInput,
     accept: (vol: GbVolume | null) => GbVolume | null,
+    detail: GbResolveDetail,
   ): Promise<GbVolume | null> {
     if (!this.enabled) return null;
     if (this.quotaLatched()) {
@@ -639,6 +650,7 @@ export class GoogleBooksResolver {
       } catch (error) {
         if (error instanceof GoogleBooksUpstreamError && error.kind === 'quota_exhausted')
           throw error;
+        detail.isbnLegFailed = true;
         this.log.debug(
           { isbn: input.isbn, err: error instanceof Error ? error.message : String(error) },
           'google books: ISBN leg failed transiently; falling through to the guarded title fallback',

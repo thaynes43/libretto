@@ -135,3 +135,167 @@ describe('resolve broker — the acquisition language check (issue #26)', () => 
     expect(out.reason).toBe('quota_exhausted');
   });
 });
+
+describe('resolve broker — honest no_match cache (issue #34)', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+
+  /** A fetch that counts requests and answers each with `status`/`body`. */
+  function countingFetch(status: number, body: unknown) {
+    const calls = { n: 0 };
+    const fetchImpl = (async (): Promise<Response> => {
+      calls.n += 1;
+      return new Response(JSON.stringify(body), { status });
+    }) as unknown as typeof fetch;
+    return { fetchImpl, calls };
+  }
+
+  function cachedBroker(fetchImpl: typeof fetch, clock: { now: number }, noMatchTtlMs = DAY) {
+    const resolver = new GoogleBooksResolver({
+      apiKey: 'k',
+      fetchImpl,
+      sleepImpl: async () => {},
+      log: silentLogger,
+      retries: 0,
+    });
+    return brokerFromResolver(resolver, silentLogger, { noMatchTtlMs, nowImpl: () => clock.now });
+  }
+
+  const want = { isbn: '9780000000000', title: 'Compulsory', authors: ['Nobody'] };
+
+  it('answers a repeat no_match inside 24h with zero Google Books requests', async () => {
+    const { fetchImpl, calls } = countingFetch(200, { items: [] });
+    const clock = { now: 1_000_000 };
+    const broker = cachedBroker(fetchImpl, clock);
+    expect(await broker.resolve(want)).toEqual({ resolved: null, reason: 'no_match' });
+    const spent = calls.n;
+    expect(spent).toBeGreaterThan(0);
+    clock.now += DAY - 1;
+    expect(await broker.resolve(want)).toEqual({ resolved: null, reason: 'no_match' });
+    expect(calls.n).toBe(spent);
+  });
+
+  it('refetches once the 24h TTL has passed', async () => {
+    const { fetchImpl, calls } = countingFetch(200, { items: [] });
+    const clock = { now: 1_000_000 };
+    const broker = cachedBroker(fetchImpl, clock);
+    await broker.resolve(want);
+    const spent = calls.n;
+    clock.now += DAY;
+    expect(await broker.resolve(want)).toEqual({ resolved: null, reason: 'no_match' });
+    expect(calls.n).toBe(spent * 2);
+  });
+
+  it('shares an entry across trivial spelling differences, with the ISBN taken from identifiers', async () => {
+    const { fetchImpl, calls } = countingFetch(200, { items: [] });
+    const broker = cachedBroker(fetchImpl, { now: 1 });
+    await broker.resolve(want);
+    const spent = calls.n;
+    await broker.resolve({
+      identifiers: ['isbn:9780000000000'],
+      title: '  COMPULSORY ',
+      authors: ['nobody'],
+    });
+    expect(calls.n).toBe(spent);
+  });
+
+  it('keeps different wants apart (isbn, title, author, volume number)', async () => {
+    const { fetchImpl, calls } = countingFetch(200, { items: [] });
+    const broker = cachedBroker(fetchImpl, { now: 1 });
+    await broker.resolve(want);
+    let spent = calls.n;
+    for (const other of [
+      { ...want, isbn: '9781111111111' },
+      { ...want, title: 'Compulsory Two' },
+      { ...want, authors: ['Somebody Else'] },
+      { title: 'Wheel of Time [09]', authors: ['Jordan'] },
+      { title: 'Wheel of Time [10]', authors: ['Jordan'] },
+    ]) {
+      await broker.resolve(other);
+      expect(calls.n).toBeGreaterThan(spent);
+      spent = calls.n;
+    }
+  });
+
+  it('never caches quota_exhausted', async () => {
+    const { fetchImpl, calls } = countingFetch(429, QUOTA_BODY);
+    const clock = { now: 1 };
+    const broker = cachedBroker(fetchImpl, clock);
+    expect((await broker.resolve(want)).reason).toBe('quota_exhausted');
+    // A quota that has recovered must be asked again: swap in a fetch that answers no_match and check it is called.
+    const recovered = countingFetch(200, { items: [] });
+    const broker2 = cachedBroker(recovered.fetchImpl, clock);
+    expect((await broker2.resolve(want)).reason).toBe('no_match');
+    expect(calls.n).toBe(1);
+    expect(recovered.calls.n).toBeGreaterThan(0);
+  });
+
+  it('never caches upstream_error', async () => {
+    const { fetchImpl, calls } = countingFetch(503, { error: { message: 'backend error' } });
+    const broker = cachedBroker(fetchImpl, { now: 1 });
+    expect((await broker.resolve(want)).reason).toBe('upstream_error');
+    const spent = calls.n;
+    expect((await broker.resolve(want)).reason).toBe('upstream_error');
+    expect(calls.n).toBeGreaterThan(spent);
+  });
+
+  it('never caches wrong_language', async () => {
+    const { fetchImpl, calls } = countingFetch(200, {
+      items: [
+        { id: 'VOL_FR', volumeInfo: { title: 'Compulsory', authors: ['Nobody'], language: 'fr' } },
+      ],
+    });
+    const broker = cachedBroker(fetchImpl, { now: 1 });
+    const input = { ...want, acceptLanguage: (l: string | null) => l === 'en' };
+    expect((await broker.resolve(input)).reason).toBe('wrong_language');
+    const spent = calls.n;
+    expect((await broker.resolve(input)).reason).toBe('wrong_language');
+    expect(calls.n).toBeGreaterThan(spent);
+  });
+
+  it('never caches a miss after the ISBN leg failed transiently', async () => {
+    let n = 0;
+    const fetchImpl = (async (input: unknown): Promise<Response> => {
+      n += 1;
+      const url = String(input);
+      if (url.includes('isbn%3A') || url.includes('isbn:')) {
+        return new Response(JSON.stringify({ error: { message: 'backend error' } }), {
+          status: 503,
+        });
+      }
+      return new Response(JSON.stringify({ items: [] }), { status: 200 });
+    }) as unknown as typeof fetch;
+    const broker = cachedBroker(fetchImpl, { now: 1 });
+    expect((await broker.resolve(want)).reason).toBe('no_match');
+    const spent = n;
+    await broker.resolve(want);
+    expect(n).toBeGreaterThan(spent);
+  });
+
+  it('never caches a resolved volume', async () => {
+    const { fetchImpl, calls } = countingFetch(200, {
+      items: [
+        {
+          id: 'VOL_LW',
+          volumeInfo: {
+            title: 'Leviathan Wakes',
+            industryIdentifiers: [{ type: 'ISBN_13', identifier: '9780316129084' }],
+          },
+        },
+      ],
+    });
+    const broker = cachedBroker(fetchImpl, { now: 1 });
+    const input = { isbn: '9780316129084', title: 'Leviathan Wakes' };
+    await broker.resolve(input);
+    await broker.resolve(input);
+    expect(calls.n).toBe(2);
+  });
+
+  it('a TTL of 0 turns the cache off', async () => {
+    const { fetchImpl, calls } = countingFetch(200, { items: [] });
+    const broker = cachedBroker(fetchImpl, { now: 1 }, 0);
+    await broker.resolve(want);
+    const spent = calls.n;
+    await broker.resolve(want);
+    expect(calls.n).toBe(spent * 2);
+  });
+});
