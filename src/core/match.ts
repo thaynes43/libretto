@@ -253,7 +253,11 @@ export function matchWorks(
         if (hit) {
           claimed.add(hit.claim);
           item = items.find((one) => one.id === hit.item.id);
-          confirmedTitle = hit.title;
+          // A series name alone does not confirm a chapter's book identity. Carry only the
+          // primary full title of a book group the hit names (Kavita supplies titleName first).
+          confirmedTitle = hit.item.books?.find((titles) =>
+            titles.some((title) => normalizeTitle(title) === normalizeTitle(hit.title)),
+          )?.[0];
           // Flag an author-guarded title match distinctly (ADR-076 C-07): a work that carries its
           // own author (e.g. a { title, author } static entry) matched via title_author.
           via = alias

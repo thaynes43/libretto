@@ -26,6 +26,19 @@ describe('canonical Kavita book chapters', () => {
     expect(selectBookChapters('160', chapters, [clare]).get(clare)).toEqual([184]);
   });
 
+  it('excludes a known unrelated full title without requiring Writer metadata', () => {
+    expect(
+      selectBookChapters(
+        '160',
+        [chapters[0]!, { id: 999, titleName: 'Known other book' }],
+        [clare],
+      ).get(clare),
+    ).toEqual([184]);
+    expect(() =>
+      selectBookChapters('160', [chapters[0]!, { id: 999, titleName: '', title: '0' }], [clare]),
+    ).toThrow('incomplete book identities');
+  });
+
   it('uses full title and Hardcover credits when chapters expose no matching ISBN', () => {
     const copies = [
       { ...chapters[0]!, isbn: null },
@@ -85,6 +98,24 @@ describe('canonical Kavita book chapters', () => {
         [match],
       ),
     ).toThrow('no longer verified');
+    expect(
+      selectBookChapters(
+        '1',
+        [{ id: 1, titleName: 'Book', writers: [{ name: 'Rowling, J.K.' }] }],
+        [match],
+      ).get(match),
+    ).toEqual([1]);
+    expect(() =>
+      selectBookChapters(
+        '1',
+        [{ id: 1, titleName: 'Book', writers: [{ name: 'Rowling J.K.' }] }],
+        [match],
+      ),
+    ).toThrow('no longer verified');
+    for (const name of ['Rowling, J.K., PhD', 'Rowling,', ',J.K.'])
+      expect(() =>
+        selectBookChapters('1', [{ id: 1, titleName: 'Book', writers: [{ name }] }], [match]),
+      ).toThrow('incomplete book identities');
   });
 
   it('accepts an equal ISBN even when the author metadata spells an expanded name', () => {

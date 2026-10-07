@@ -88,6 +88,24 @@ describe('matchWorks', () => {
       { itemId: 'old-series', work: second, confirmedTitle: 'Library second' },
     ]);
   });
+
+  it('does not promote a series-name alias into a confirmed book title', () => {
+    const canonical = work({ label: 'Canonical book', title: 'Canonical book' });
+    const result = matchWorks(
+      [canonical],
+      [
+        {
+          id: 'umbrella',
+          title: 'Umbrella',
+          identifiers: [],
+          books: [['Actual other book', 'Umbrella: Actual other book']],
+        },
+      ],
+      { titleFallback: true, titleAliases: { 'Canonical book': ['Umbrella'] } },
+    );
+    expect(result.matchedIds).toEqual(['umbrella']);
+    expect(result.matchedWorks).toEqual([{ itemId: 'umbrella', work: canonical }]);
+  });
 });
 
 describe('matchWorks — series grain (comics)', () => {

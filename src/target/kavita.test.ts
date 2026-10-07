@@ -378,6 +378,74 @@ describe('KavitaTarget', () => {
       expect(stub.requests.some((r) => r.includes('update-by-series'))).toBe(false);
     });
 
+    it('removes or skips a known unrelated title even when its Writer metadata is absent', async () => {
+      seedCity(stub);
+      stub.setChapterTitle(160, 1, 'Known unrelated book');
+      stub.setChapterWriters(160, 1, []);
+      const syncId = stub.seedReadingList({
+        title: 'Sync',
+        summary: buildCollectionDescription('sync'),
+        promoted: true,
+        seriesIds: [160],
+      });
+      const context = { libraryId: '2', matchedWorks: [{ itemId: '160', work: clareWork }] };
+      await target.updateCollection(`readinglist:${syncId}`, { itemIds: ['160'], ...context });
+      expect(stub.getReadingList(syncId)!.items.map((item) => item.chapterId)).toEqual([184]);
+      const appendId = stub.seedReadingList({
+        title: 'Append',
+        summary: buildCollectionDescription('append'),
+        promoted: true,
+        seriesIds: [11],
+      });
+      await target.updateCollection(`readinglist:${appendId}`, {
+        itemIds: ['11', '160'],
+        syncMode: 'append',
+        ...context,
+      });
+      expect(stub.getReadingList(appendId)!.items.map((item) => item.chapterId)).toEqual([
+        11000, 184,
+      ]);
+    });
+
+    it('preserves the list when a series-name hit lacks confirmed chapter book identity', async () => {
+      stub.seedSeries({
+        id: 180,
+        name: 'Project Hail Mary',
+        libraryId: 2,
+        pages: 500,
+        chapterIsbns: [null],
+        chapters: [{ titleName: 'Project Hail Mary: A Novel', writers: ['Andy Weir'] }],
+      });
+      const recipe = makeRecipe({ id: 'hail', targets: [{ server: 'kavita', libraryId: '2' }] });
+      const id = stub.seedReadingList({
+        title: 'Hail',
+        summary: buildCollectionDescription('hail'),
+        promoted: true,
+        seriesIds: [180, 11],
+      });
+      const original = stub.getReadingList(id)!.items;
+      await expect(
+        reconcileTarget(
+          recipe,
+          recipe.targets[0]!,
+          target,
+          [
+            {
+              label: 'Project Hail Mary',
+              title: 'Project Hail Mary',
+              identifiers: [],
+              credits: ['Andy Weir'],
+            },
+          ],
+          silentLogger,
+        ),
+      ).rejects.toThrow('matched canonical book no longer verified');
+      expect(stub.getReadingList(id)!.items).toEqual(original);
+      expect(stub.requests.some((r) => /update-by-|delete-item|update-position/.test(r))).toBe(
+        false,
+      );
+    });
+
     it('creates a reading list using precise chapter adds, never adding the foreign chapter', async () => {
       seedCity(stub);
       const recipe = makeRecipe({ id: 'mortal', targets: [{ server: 'kavita', libraryId: '2' }] });

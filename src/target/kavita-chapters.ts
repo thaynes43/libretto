@@ -16,11 +16,17 @@ export interface KavitaChapter {
 
 /** Full author identity: punctuation/initial spacing is harmless, expanded names are not inferred. */
 function authorKey(name: string): string {
-  return name
-    .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
-    .toLowerCase()
-    .replace(/[^\p{L}\p{N}]/gu, '');
+  const compact = (part: string) =>
+    part
+      .normalize('NFKD')
+      .replace(/\p{M}/gu, '')
+      .toLowerCase()
+      .replace(/[^\p{L}\p{N}]/gu, '');
+  const parts = name.split(',');
+  // Exactly one explicit surname-first comma is a known format. Preserve component order;
+  // extra commas, an empty side or sorting arbitrary name tokens cannot establish identity.
+  if (parts.length > 2 || parts.some((part) => !compact(part))) return '';
+  return compact(parts.length === 2 ? `${parts[1]} ${parts[0]}` : name);
 }
 
 /** Select canonical works, retaining every verified copy in the source's chapter order. */
@@ -44,16 +50,21 @@ export function selectBookChapters(
       for (const match of exact) selected.get(match)!.push(chapter.id!);
       continue;
     }
-    const title = normalizeTitle(chapter.titleName?.trim() || chapter.title?.trim() || '');
+    const title = normalizeTitle(chapter.titleName?.trim() || '');
+    if (!title) incomplete();
+    const candidates = matches.filter((match) =>
+      [match.work.title, match.confirmedTitle]
+        .filter((value): value is string => value !== undefined)
+        .map(normalizeTitle)
+        .includes(title),
+    );
+    // A known different full title cannot satisfy either membership path. Writer data is then
+    // unnecessary; unknown titles and potentially matching titles still need complete proof.
+    if (candidates.length === 0) continue;
     const writers = (chapter.writers ?? []).map((writer) => writer.name?.trim() ?? '');
     // Unknown identity cannot prove that an existing chapter is foreign and safe to remove.
-    if (!title || writers.length === 0 || writers.some((writer) => !authorKey(writer)))
-      incomplete();
-    for (const match of matches) {
-      const titles = [match.work.title, match.confirmedTitle]
-        .filter((value): value is string => value !== undefined)
-        .map(normalizeTitle);
-      if (!titles.includes(title)) continue;
+    if (writers.length === 0 || writers.some((writer) => !authorKey(writer))) incomplete();
+    for (const match of candidates) {
       const authors = workAuthors(match.work)?.map((author) => author.trim());
       if (!authors?.length || authors.some((author) => !authorKey(author))) incomplete();
       if (
