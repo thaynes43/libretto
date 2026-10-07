@@ -3,6 +3,7 @@ import type { Logger } from '../logger.js';
 import {
   gbQueryTitle,
   gbAuthorsMatch,
+  gbSurnameMatches,
   gbResolveTitleMatches,
   gbIsOmnibusVolume,
   titleVolumeNumbers,
@@ -651,6 +652,17 @@ describe('the keyword leg (Google Books field search misses a book its plain sea
     const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
     const out = await r.resolveVolume({ title: 'Shift', author: 'Hugh Howey' });
     expect(out?.volumeId).toBe('VOL_SHIFT');
+  });
+
+  it('needs the surname, not just a shared first name', async () => {
+    const { fetchImpl } = fakeFetch({
+      'Gray Dawn Walter Mosley': [vol('VOL_MYERS', 'Gray Dawn', ['Walter Dean Myers'])],
+    });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    expect(await r.resolveVolume({ title: 'Gray Dawn', author: 'Walter Mosley' })).toBeNull();
+    expect(gbSurnameMatches('James S. A. Corey', ['James S.A. Corey'])).toBe(true);
+    expect(gbSurnameMatches('Ursula K. Le Guin', ['Ursula K. Le Guin'])).toBe(true);
+    expect(gbSurnameMatches('Walter Mosley', ['Walter Dean Myers'])).toBe(false);
   });
 
   it('never takes a volume that names no author, or another author', async () => {

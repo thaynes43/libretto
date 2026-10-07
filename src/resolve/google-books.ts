@@ -66,6 +66,20 @@ export function gbAuthorsMatch(queryAuthor: string, resolvedAuthors: readonly st
   return resolvedAuthors.some((a) => tokens(a).some((t) => q.has(t)));
 }
 
+/** Strict author agreement for the keyword leg, which has no `inauthor:` filter: the queried author's surname (its last
+ * name token) must be a name token of a resolved author, so "Walter Mosley" never takes "Walter Dean Myers". */
+export function gbSurnameMatches(queryAuthor: string, resolvedAuthors: readonly string[]): boolean {
+  const tokens = (s: string): string[] =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, ' ')
+      .split(' ')
+      .filter((w) => w.length >= 2);
+  const surname = tokens(queryAuthor).at(-1);
+  if (!surname) return false;
+  return resolvedAuthors.some((a) => tokens(a).includes(surname));
+}
+
 const TITLE_STOP_WORDS = new Set([
   'the',
   'a',
@@ -641,8 +655,8 @@ export class GoogleBooksResolver {
    * author. Google Books' field search (`intitle:`, `inauthor:`, `isbn:`) answered `200 totalItems:0` for books it
    * holds (Walter Mosley's Gray Dawn, Hugh Howey's Shift, even `intitle:Wool`) while a plain search found them first,
    * so the field legs alone left those wants unresolved. A plain search ranks loosely, so this leg is stricter than the
-   * field leg: it reads the top results in order and takes the first that passes every guard, the volume must name an
-   * author that matches, and the title must agree both ways (the volume's own title is mostly the queried one, so
+   * field leg: it reads the top results in order and takes the first that passes every guard, an author of the volume must
+   * carry the queried surname, and the title must agree both ways (the volume's own title is mostly the queried one, so
    * "Shift" never takes "First Shift: Legacy").
    */
   private async resolveByKeywords(
@@ -655,7 +669,7 @@ export class GoogleBooksResolver {
     const vols = await this.query(`${queryTitle} ${author}`);
     for (const vol of vols) {
       const authors = vol.volumeInfo?.authors ?? [];
-      if (authors.length === 0 || !gbAuthorsMatch(author, authors)) continue;
+      if (authors.length === 0 || !gbSurnameMatches(author, authors)) continue;
       const mainTitle = vol.volumeInfo?.title;
       if (!mainTitle || !gbResolveTitleMatches(mainTitle, queryTitle)) continue;
       const guarded = this.guardTitleHit(vol, queryTitle, input);
