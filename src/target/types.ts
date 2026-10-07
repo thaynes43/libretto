@@ -87,6 +87,8 @@ export interface CreateCollectionInput {
 export interface UpdateCollectionInput {
   /** Full ordered membership to write (replace semantics). */
   itemIds: string[];
+  /** Nested membership also obeys append's no-removal contract. Omitted means sync. */
+  syncMode?: 'append' | 'sync';
   /**
    * When present, re-write the collection's description/summary too (ADR-076 C-02): the reconciler
    * passes this only when the recipe's provenance marker changed (a category was set/changed on an

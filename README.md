@@ -255,6 +255,8 @@ What `ordered` materializes as, per target:
 
 Safety rules the reconciler enforces:
 
+Owned Kavita reading lists reconcile current chapter membership as well as series order, so a rescan replacing chapters under a retained series id repairs the list. Incomplete detail reads leave existing items intact.
+
 - Ownership keys on the provenance marker in the collection description, never on the name. A renamed collection stays owned; a same-name collection without the marker is never touched.
 - `append` never removes. A run that matches zero items flags a warning and leaves the collection alone.
 - Deleting a recipe orphans its collection in the target; nothing is deleted remotely.

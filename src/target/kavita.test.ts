@@ -7,6 +7,8 @@ import { DiskCache } from '../cache/disk.js';
 import { KavitaStub } from '../testing/kavita-stub.js';
 import { startStubServer } from '../testing/http.js';
 import { makeTempDir, silentLogger } from '../testing/fixtures.js';
+import { makeRecipe } from '../testing/fixtures.js';
+import { reconcileTarget } from '../core/reconciler.js';
 
 const API_KEY = 'kavita-api-key';
 
@@ -269,6 +271,133 @@ describe('KavitaTarget', () => {
   });
 
   describe('ordered recipes: reading lists', () => {
+    it('reconciles replacement and added chapters when the ordered series ids are unchanged', async () => {
+      const recipe = makeRecipe({ id: 'ordered', targets: [{ server: 'kavita', libraryId: '2' }] });
+      const id = stub.seedReadingList({
+        title: 'Ordered',
+        summary: buildCollectionDescription('ordered'),
+        promoted: true,
+        seriesIds: [11, 12],
+      });
+      const original = stub.getReadingList(id)!.items;
+      // Prime the identifier cache, then model a scan changing only chapter ids + scan time.
+      await target.listItems('2');
+      stub.setSeriesChapterIds(11, [11050, 11051]);
+      stub.scanSeries(11, '2026-10-07T22:00:00Z');
+      const works = [
+        { identifiers: ['isbn:9780316129084'], label: 'Leviathan Wakes' },
+        { identifiers: ['isbn:9780316129060'], label: "Caliban's War" },
+      ];
+      const result = await reconcileTarget(recipe, recipe.targets[0]!, target, works, silentLogger);
+      const repaired = stub.getReadingList(id)!;
+      expect(result.counts).toMatchObject({ added: 0, removed: 0, written: 2 });
+      expect(repaired.items.map((item) => item.chapterId)).toEqual([11050, 11051, 12000]);
+      expect(repaired.items.at(-1)!.id).toBe(original.at(-1)!.id);
+      expect(repaired.items.some((item) => item.id === original[0]!.id)).toBe(false);
+      const beforeRepeat = stub.requests.length;
+      await reconcileTarget(recipe, recipe.targets[0]!, target, works, silentLogger);
+      expect(stub.getReadingList(id)!.items).toEqual(repaired.items);
+      expect(
+        stub.requests
+          .slice(beforeRepeat)
+          .filter((r) => /update-by-series|delete-item|update-position/.test(r)),
+      ).toEqual([]);
+    });
+
+    it('leaves all existing items intact when any desired series detail read is incomplete', async () => {
+      const id = stub.seedReadingList({
+        title: 'Ordered',
+        summary: buildCollectionDescription('ordered'),
+        promoted: true,
+        seriesIds: [13, 11],
+      });
+      const original = stub.getReadingList(id)!.items;
+      stub.setSeriesDetailIncomplete(12, true);
+      await expect(
+        target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '12'] }),
+      ).rejects.toThrow('incomplete chapter read');
+      expect(stub.getReadingList(id)!.items).toEqual(original);
+      expect(
+        stub.requests.filter((r) => /update-by-series|delete-item|update-position/.test(r)),
+      ).toEqual([]);
+    });
+
+    it('retains old chapters when successful append responses do not confirm the replacement', async () => {
+      const id = stub.seedReadingList({
+        title: 'Ordered',
+        summary: buildCollectionDescription('ordered'),
+        promoted: true,
+        seriesIds: [11, 12],
+      });
+      const original = stub.getReadingList(id)!.items;
+      stub.setSeriesChapterIds(11, [11050]);
+      stub.suppressChapterAdds = true;
+      await expect(
+        target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '12'] }),
+      ).rejects.toThrow('chapter additions not confirmed');
+      expect(stub.getReadingList(id)!.items).toEqual(original);
+      expect(stub.requests.filter((r) => r.includes('delete-item'))).toHaveLength(0);
+    });
+
+    it('keeps distinct duplicate-file chapters and surviving item ids in stable source order', async () => {
+      stub.setChapterTitle(15, 1, 'Outlander');
+      const id = stub.seedReadingList({
+        title: 'Ordered',
+        summary: buildCollectionDescription('ordered'),
+        promoted: true,
+        seriesIds: [15, 11],
+      });
+      const originals = new Map(
+        stub.getReadingList(id)!.items.map((item) => [item.chapterId, item.id]),
+      );
+      stub.setSeriesChapterIds(15, [15002, 15000, 15001]);
+      await target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '15'] });
+      const repaired = stub.getReadingList(id)!.items;
+      expect(repaired.map((item) => item.chapterId)).toEqual([11000, 15002, 15000, 15001]);
+      for (const item of repaired)
+        if (originals.has(item.chapterId)) expect(item.id).toBe(originals.get(item.chapterId));
+      const beforeRepeat = stub.requests.length;
+      await target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '15'] });
+      expect(stub.getReadingList(id)!.items).toEqual(repaired);
+      expect(
+        stub.requests
+          .slice(beforeRepeat)
+          .filter((r) => /update-by-series|delete-item|update-position/.test(r)),
+      ).toEqual([]);
+    });
+
+    it('retains old references when a scan changes chapter identities during the append', async () => {
+      const id = stub.seedReadingList({
+        title: 'Ordered',
+        summary: buildCollectionDescription('ordered'),
+        promoted: true,
+        seriesIds: [11, 12],
+      });
+      const original = stub.getReadingList(id)!.items;
+      stub.setSeriesChapterIds(11, [11050]);
+      stub.afterChapterAdd = () => stub.setSeriesChapterIds(11, [11099]);
+      await expect(
+        target.updateCollection(`readinglist:${id}`, { itemIds: ['11', '12'] }),
+      ).rejects.toThrow('chapters changed during reconcile');
+      for (const item of original) expect(stub.getReadingList(id)!.items).toContainEqual(item);
+      expect(stub.requests.filter((r) => r.includes('delete-item'))).toHaveLength(0);
+    });
+
+    it('append adds current chapters without removing departed chapter references', async () => {
+      const id = stub.seedReadingList({
+        title: 'Ordered',
+        summary: buildCollectionDescription('ordered'),
+        promoted: true,
+        seriesIds: [11],
+      });
+      const original = stub.getReadingList(id)!.items[0]!;
+      stub.setSeriesChapterIds(11, [11050]);
+      await target.updateCollection(`readinglist:${id}`, { itemIds: ['11'], syncMode: 'append' });
+      expect(stub.getReadingList(id)!.items.map((item) => item.chapterId)).toEqual([11000, 11050]);
+      expect(stub.getReadingList(id)!.items[0]).toEqual(original);
+      expect(stub.requests.filter((r) => r.includes('delete-item'))).toHaveLength(0);
+    });
+
     it('creates a reading list with the marker and appends series in source order', async () => {
       const created = await target.createCollection({
         libraryId: '2',

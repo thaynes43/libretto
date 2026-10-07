@@ -158,16 +158,20 @@ export async function reconcileTarget(
       provenanceMarker(recipe.id, recipe.category),
     );
     const membershipChanged = !sameOrder(desired, current);
-    if (membershipChanged || markerChanged) {
+    // Reading-list membership is chapter-grained. A scan may replace/add chapters while the
+    // ordered series ids stay identical; the adapter verifies those children and writes only a diff.
+    const checkChapters = recipe.variables.ordered && collection.kind === 'kavita_reading_list';
+    if (membershipChanged || markerChanged || checkChapters) {
       await target.updateCollection(collection.id, {
         itemIds: desired,
+        syncMode: recipe.variables.syncMode,
         ...(markerChanged
           ? { description: withUpdatedMarker(collection.description, recipe.id, recipe.category) }
           : {}),
       });
       log.info(
         { recipeId: recipe.id, server, collectionId: collection.id, added, removed, markerChanged },
-        'updated collection',
+        'reconciled collection',
       );
     }
     written = desired.length;
