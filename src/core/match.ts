@@ -1,5 +1,6 @@
 import { workAuthors, type WorkItem } from '../builders/index.js';
 import { findCompilations, isCompilationTitle, listsOneSeries } from './compilation.js';
+import { findUnnumbered } from './unnumbered.js';
 import { coreTitles, normalizeTitle, TitleIndex } from '../matching/title.js';
 import { isSeriesGrain, type Recipe } from '../recipes/schema.js';
 import type { TargetItem } from '../target/types.js';
@@ -41,6 +42,12 @@ export interface MatchResult {
    * acquisition chases a box set of books already held; reported separately and flagged on the wire.
    */
   compilationWorks: WorkItem[];
+  /**
+   * Unmatched works of a one-series list that have no series position (libretto#30): companions such as a coloring
+   * book or a guide, and the odd real read. Members, never fetched: kept OUT of `missingWorks`, so neither the missing
+   * report nor acquisition chases them; reported separately and flagged on the wire. A compilation stays a compilation.
+   */
+  unnumberedWorks: WorkItem[];
 }
 
 /** How a work found its item (undefined = unmatched). */
@@ -67,7 +74,8 @@ export interface MatchOptions {
   /**
    * The work list is ONE series (a `hardcover_series` recipe), so a packaged compilation in it is a
    * compilation of its neighbours and is kept out of `missingWorks` (libretto#18). Default false: an
-   * unrelated box set in a mixed list stays an ordinary missing work.
+   * unrelated box set in a mixed list stays an ordinary missing work. Its unnumbered books are likewise kept out of
+   * `missingWorks` (libretto#30).
    */
   oneSeries?: boolean;
   /**
@@ -182,9 +190,12 @@ export function matchWorks(
   const matchedSeen = new Set<string>();
   const missingWorks: WorkItem[] = [];
   const compilationWorks: WorkItem[] = [];
-  // Work grain only: a series-grain "work" is a whole series, never a box set of one.
+  const unnumberedWorks: WorkItem[] = [];
+  // Work grain only: a series-grain "work" is a whole series, never a box set or a companion of one.
   const compilations =
     !seriesGrain && options.oneSeries ? findCompilations(works) : new Set<WorkItem>();
+  const unnumbered =
+    !seriesGrain && options.oneSeries ? findUnnumbered(works) : new Set<WorkItem>();
   const matchedVia: MatchVia[] = [];
   let matchedByTitle = 0;
 
@@ -250,7 +261,12 @@ export function matchWorks(
     }
 
     if (!item) {
-      (compilations.has(work) ? compilationWorks : missingWorks).push(work);
+      (compilations.has(work)
+        ? compilationWorks
+        : unnumbered.has(work)
+          ? unnumberedWorks
+          : missingWorks
+      ).push(work);
       matchedVia.push(undefined);
     } else if (!matchedSeen.has(item.id)) {
       matchedSeen.add(item.id);
@@ -263,7 +279,15 @@ export function matchWorks(
     }
   }
 
-  return { matchedIds, matchedSeen, matchedByTitle, matchedVia, missingWorks, compilationWorks };
+  return {
+    matchedIds,
+    matchedSeen,
+    matchedByTitle,
+    matchedVia,
+    missingWorks,
+    compilationWorks,
+    unnumberedWorks,
+  };
 }
 
 /** One missing member's identity, enough for a consumer to mint a request row (title/author/ISBN/refs). */
@@ -280,17 +304,29 @@ export interface MissingMember {
   identifiers: string[];
   /** Always true when present: this member is a compilation edition (libretto#18). Only set on `compilations[]`. */
   compilation?: true;
+  /** Always true when present: this member is an unnumbered series book (libretto#30). Only set on `unnumbered[]`. */
+  unnumbered?: true;
+}
+
+/** Why a member is left out of the missing list: a compilation edition, or an unnumbered series book. */
+export type NeverFetched = 'compilation' | 'unnumbered';
+
+/** The wire flag for a never-fetched member (`{ compilation: true }` or `{ unnumbered: true }`), else nothing. */
+function neverFetchedFlag(kind: NeverFetched | undefined): Pick<MissingMember, NeverFetched> {
+  if (kind === 'compilation') return { compilation: true };
+  if (kind === 'unnumbered') return { unnumbered: true };
+  return {};
 }
 
 /** Project an unmatched WorkItem to its wire identity for the missing endpoint. */
-export function toMissingMember(work: WorkItem, compilation = false): MissingMember {
+export function toMissingMember(work: WorkItem, kind?: NeverFetched): MissingMember {
   return {
     label: work.label,
     title: work.title ?? null,
     authors: workAuthors(work) ?? [],
     isbn: work.identifiers.find((id) => id.startsWith('isbn:'))?.slice('isbn:'.length) ?? null,
     identifiers: work.identifiers,
-    ...(compilation ? { compilation: true as const } : {}),
+    ...neverFetchedFlag(kind),
   };
 }
 
@@ -315,10 +351,12 @@ export interface PreviewMember {
   identifiers: string[];
   /** Present (true) only when this member is a compilation edition of other listed members (libretto#18). */
   compilation?: true;
+  /** Present (true) only when this member is an unnumbered book of the series (libretto#30): a member, never fetched. */
+  unnumbered?: true;
 }
 
 /** Project a resolved WorkItem to its wire identity for the preview endpoint. */
-export function toPreviewMember(work: WorkItem, compilation = false): PreviewMember {
+export function toPreviewMember(work: WorkItem, kind?: NeverFetched): PreviewMember {
   return {
     label: work.label,
     title: work.title ?? null,
@@ -326,6 +364,6 @@ export function toPreviewMember(work: WorkItem, compilation = false): PreviewMem
     isbn: work.identifiers.find((id) => id.startsWith('isbn:'))?.slice('isbn:'.length) ?? null,
     position: work.position ?? null,
     identifiers: work.identifiers,
-    ...(compilation ? { compilation: true as const } : {}),
+    ...neverFetchedFlag(kind),
   };
 }

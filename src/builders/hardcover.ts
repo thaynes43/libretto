@@ -29,6 +29,9 @@ import type { BuilderSearchResponse, BuilderSearchResult, WorkItem } from './ind
  *   unnumbered book that duplicates a numbered one (an edition Hardcover never
  *   merged), and a book Hardcover knows only in a language the deployment does
  *   not collect.
+ * - Any other unnumbered book (no `position`, so the work carries none) stays in
+ *   the list as a member that is never fetched: the matcher keeps it out of
+ *   `missing[]` and acquisition (`src/core/unnumbered.ts`, libretto#30).
  */
 
 export interface HardcoverSeriesSourceOptions {
