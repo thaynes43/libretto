@@ -216,6 +216,19 @@ describe('resolve broker — honest no_match cache (issue #34)', () => {
     }
   });
 
+  it('keeps distinct non-Latin titles apart when there is no ISBN', async () => {
+    const { fetchImpl, calls } = countingFetch(200, { items: [] });
+    const broker = cachedBroker(fetchImpl, { now: 1 });
+    await broker.resolve({ title: 'Война и мир', authors: ['Толстой'] });
+    const spent = calls.n;
+    await broker.resolve({ title: 'Анна Каренина', authors: ['Толстой'] });
+    expect(calls.n).toBeGreaterThan(spent);
+    // The same Cyrillic want still hits.
+    const again = calls.n;
+    await broker.resolve({ title: 'Анна Каренина', authors: ['Толстой'] });
+    expect(calls.n).toBe(again);
+  });
+
   it('never caches quota_exhausted', async () => {
     const { fetchImpl, calls } = countingFetch(429, QUOTA_BODY);
     const clock = { now: 1 };
