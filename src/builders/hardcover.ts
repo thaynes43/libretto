@@ -1,7 +1,9 @@
+import { languagePolicy, type LanguagePolicy } from '../acquire/language.js';
 import type { DiskCache } from '../cache/disk.js';
 import { fetchJson } from '../http.js';
 import { normalizeIdentifiers } from '../identifiers.js';
 import type { Logger } from '../logger.js';
+import { coreTitles, normalizeTitle } from '../matching/title.js';
 import type { BuilderSearchResponse, BuilderSearchResult, WorkItem } from './index.js';
 
 /**
@@ -23,6 +25,10 @@ import type { BuilderSearchResponse, BuilderSearchResult, WorkItem } from './ind
  * - The book_series recipe (distinct_on position, canonical_id null,
  *   is_partial_book false, compilation false) mirrors the official
  *   "books in a series" guide so positions match the website's series page.
+ * - Two kinds of series book are left out of the list (`leftOutSeriesBooks`): an
+ *   unnumbered book that duplicates a numbered one (an edition Hardcover never
+ *   merged), and a book Hardcover knows only in a language the deployment does
+ *   not collect.
  */
 
 export interface HardcoverSeriesSourceOptions {
@@ -36,6 +42,11 @@ export interface HardcoverSeriesSourceOptions {
   cacheTtlMs?: number;
   /** How long a typeahead search result stays cached (default 1 hour; softens rate limits). */
   searchCacheTtlMs?: number;
+  /**
+   * The languages this deployment collects (`LIBRETTO_ACQUISITION_LANGUAGES`): a series book Hardcover knows only in
+   * another language is left out. Default: every language.
+   */
+  languages?: LanguagePolicy;
   /** Injectable for tests. */
   sleep?: (ms: number) => Promise<void>;
   now?: () => number;
@@ -139,9 +150,13 @@ query LibrettoBookEditions($bookIds: [Int!]!) {
   ) {
     id
     book_id
+    title
     isbn_13
     isbn_10
     asin
+    language {
+      code2
+    }
   }
 }`;
 
@@ -169,10 +184,83 @@ interface EditionsQueryData {
   editions: {
     id: number;
     book_id: number;
+    title?: string | null;
     isbn_13: string | null;
     isbn_10: string | null;
     asin: string | null;
+    /** The edition's language (ISO 639-1 in `code2`); null when Hardcover has none for it. */
+    language?: { code2?: string | null } | null;
   }[];
+}
+
+/** Why a series book is left out of the work list. */
+export type LeftOutReason = 'duplicate' | 'language';
+
+/** The fields of a series entry and its editions that decide whether the book is left out. */
+export interface SeriesBookFacts {
+  position: number | null;
+  book: { id: number; title: string };
+}
+export interface SeriesEditionFacts {
+  title?: string | null;
+  language?: { code2?: string | null } | null;
+}
+
+/**
+ * The series books to leave out of the work list (thaynes43/haynesnetwork#794), by Hardcover book id:
+ *
+ * - `duplicate`: an UNNUMBERED book whose title, as is or without its series decoration, is the title of a numbered
+ *   book or of one of that book's editions. Hardcover keeps some editions as separate books it never merged
+ *   (`canonical_id` unset), and lists them in the series with no position: "Crescent City - La casa di terra e
+ *   sangue" is the Italian edition of "House of Earth and Blood" (#1), "Caliban's War: The Expanse, Book 2" is #2.
+ *   Numbered books are never left out this way (an edition's title is too loose a signal to drop a numbered book on).
+ * - `language`: a book Hardcover knows only in a language `languages` does not allow: every edition with an
+ *   identifier names a language, none of them an allowed one, and the book's own title is one of those editions'
+ *   titles ("Guida di Eragon ad Alagaësia", `it`). A book whose title is not its foreign edition's title is kept: it is
+ *   the original with only a translation catalogued ("Troll Bridge" with only "Drame de troll", `fr`), and so is one
+ *   with any edition of unknown language.
+ */
+export function leftOutSeriesBooks(
+  entries: readonly SeriesBookFacts[],
+  editionsByBook: ReadonlyMap<number, readonly SeriesEditionFacts[]>,
+  seriesName: string,
+  languages: LanguagePolicy,
+): Map<number, LeftOutReason> {
+  const leftOut = new Map<number, LeftOutReason>();
+  if (languages.allowed !== undefined) {
+    for (const { book } of entries) {
+      const editions = editionsByBook.get(book.id) ?? [];
+      const codes = editions.map((edition) => edition.language?.code2 ?? null);
+      if (codes.length === 0 || codes.some((code) => code === null || code.trim() === '')) continue;
+      if (codes.some((code) => languages.allows(code))) continue;
+      const own = normalizeTitle(book.title);
+      if (
+        own.length > 0 &&
+        editions.some((edition) => normalizeTitle(edition.title ?? '') === own)
+      ) {
+        leftOut.set(book.id, 'language');
+      }
+    }
+  }
+
+  const numbered = new Set<string>();
+  for (const { position, book } of entries) {
+    if (position === null || leftOut.has(book.id)) continue;
+    numbered.add(normalizeTitle(book.title));
+    for (const edition of editionsByBook.get(book.id) ?? []) {
+      numbered.add(normalizeTitle(edition.title ?? ''));
+    }
+  }
+  numbered.delete('');
+  for (const { position, book } of entries) {
+    if (position !== null || leftOut.has(book.id)) continue;
+    const keys = [
+      normalizeTitle(book.title),
+      ...coreTitles(book.title, seriesName).map((core) => core.key),
+    ];
+    if (keys.some((key) => numbered.has(key))) leftOut.set(book.id, 'duplicate');
+  }
+  return leftOut;
 }
 
 interface SeriesMetaQueryData {
@@ -215,6 +303,7 @@ export class HardcoverSeriesSource {
   private readonly minIntervalMs: number;
   private readonly cacheTtlMs: number;
   private readonly searchCacheTtlMs: number;
+  private readonly languages: LanguagePolicy;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly now: () => number;
   private gate: Promise<void> = Promise.resolve();
@@ -225,6 +314,7 @@ export class HardcoverSeriesSource {
     this.minIntervalMs = options.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
     this.cacheTtlMs = options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
     this.searchCacheTtlMs = options.searchCacheTtlMs ?? DEFAULT_SEARCH_CACHE_TTL_MS;
+    this.languages = options.languages ?? languagePolicy(undefined);
     this.sleep = options.sleep ?? ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
     this.now = options.now ?? Date.now;
   }
@@ -237,7 +327,10 @@ export class HardcoverSeriesSource {
     // v3 adds WorkItem.position (series position) for the M4 member preview.
     // v4 adds WorkItem.series (the series name) for the decorated-title match.
     // v5 adds WorkItem.credits (the book's authors) for consumers and acquisition.
-    const cacheKey = `hardcover:series-works:v5:${ref}`;
+    // v6 leaves out unmerged duplicates and other-language books (haynesnetwork#794); the language list is part of
+    // the key, so a changed LIBRETTO_ACQUISITION_LANGUAGES is not served a list built for the old one.
+    const languageKey = this.languages.allowed?.join(',') ?? '*';
+    const cacheKey = `hardcover:series-works:v6:${languageKey}:${ref}`;
     const cached = await this.options.cache.get<WorkItem[]>(cacheKey);
     if (cached !== undefined) {
       this.options.log.debug({ ref, works: cached.length }, 'hardcover: series cache hit');
@@ -272,11 +365,25 @@ export class HardcoverSeriesSource {
       }
     }
 
+    const leftOut = leftOutSeriesBooks(entries, editionsByBook, series.name, this.languages);
+    if (leftOut.size > 0) {
+      this.options.log.info(
+        {
+          ref,
+          series: series.slug,
+          leftOut: entries
+            .filter((entry) => leftOut.has(entry.book.id))
+            .map((entry) => ({ title: entry.book.title, reason: leftOut.get(entry.book.id) })),
+        },
+        'hardcover: series books left out (an unmerged duplicate, or only in another language)',
+      );
+    }
+
     const works: WorkItem[] = [];
     const seenBooks = new Set<number>();
     for (const entry of entries) {
       const { book } = entry;
-      if (seenBooks.has(book.id)) continue;
+      if (seenBooks.has(book.id) || leftOut.has(book.id)) continue;
       seenBooks.add(book.id);
       const editions = editionsByBook.get(book.id) ?? [];
       // Preference order: the book's default editions first, then the rest

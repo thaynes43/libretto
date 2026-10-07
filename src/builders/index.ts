@@ -1,3 +1,4 @@
+import { languagePolicy } from '../acquire/language.js';
 import type { DiskCache } from '../cache/disk.js';
 import type { AppConfig } from '../config.js';
 import { normalizeIdentifier } from '../identifiers.js';
@@ -119,7 +120,12 @@ export function createBuilderContext(
 ): BuilderContext {
   const ctx: BuilderContext = {};
   if (config.hardcoverToken !== undefined) {
-    ctx.hardcoverSeries = new HardcoverSeriesSource({ token: config.hardcoverToken, cache, log });
+    ctx.hardcoverSeries = new HardcoverSeriesSource({
+      token: config.hardcoverToken,
+      cache,
+      log,
+      languages: languagePolicy(config.acquisitionLanguages),
+    });
   }
   if (config.nytApiKey !== undefined) {
     ctx.nytList = new NytListSource({ apiKey: config.nytApiKey, cache, log });
