@@ -1,7 +1,8 @@
 import path from 'node:path';
 import { Hono } from 'hono';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { hardcoverAuthors, HardcoverSeriesSource } from './hardcover.js';
+import { hardcoverAuthors, HardcoverSeriesSource, leftOutSeriesBooks } from './hardcover.js';
+import { languagePolicy } from '../acquire/language.js';
 import { DiskCache } from '../cache/disk.js';
 import { makeTempDir, silentLogger } from '../testing/fixtures.js';
 import { startStubServer } from '../testing/http.js';
@@ -114,6 +115,85 @@ const EDITIONS_FIXTURE = {
   ],
 };
 
+/**
+ * Hardcover series 2211 (Crescent City) as the live API answered on 2026-10-06 (haynesnetwork#794), cut down: the
+ * Italian "Crescent City - La casa di terra e sangue" is its own book (never merged into #1, no position, one edition
+ * with no identifier and no language), and #1 carries the Italian edition "La Casa di Terra e Sangue".
+ */
+const CRESCENT_SERIES_FIXTURE = {
+  series: [
+    {
+      id: 2211,
+      name: 'Crescent City',
+      slug: 'crescent-city',
+      book_series: [
+        {
+          position: 1,
+          book: {
+            id: 465201,
+            title: 'House of Earth and Blood',
+            default_physical_edition_id: 14974657,
+            default_ebook_edition_id: null,
+            default_audio_edition_id: null,
+          },
+        },
+        {
+          position: 2,
+          book: {
+            id: 429093,
+            title: 'House of Sky and Breath',
+            default_physical_edition_id: null,
+            default_ebook_edition_id: null,
+            default_audio_edition_id: null,
+          },
+        },
+        {
+          position: null,
+          book: {
+            id: 3027642,
+            title: 'Crescent City - La casa di terra e sangue',
+            default_physical_edition_id: null,
+            default_ebook_edition_id: null,
+            default_audio_edition_id: null,
+          },
+        },
+      ],
+    },
+  ],
+};
+
+const CRESCENT_EDITIONS_FIXTURE = {
+  editions: [
+    {
+      id: 14974657,
+      book_id: 465201,
+      title: 'House of Earth and Blood',
+      isbn_13: '9781635574043',
+      isbn_10: '1635574048',
+      asin: null,
+      language: { code2: 'en' },
+    },
+    {
+      id: 32886113,
+      book_id: 465201,
+      title: 'La Casa di Terra e Sangue',
+      isbn_13: '9788835703228',
+      isbn_10: null,
+      asin: null,
+      language: { code2: 'it' },
+    },
+    {
+      id: 30000001,
+      book_id: 429093,
+      title: 'House of Sky and Breath',
+      isbn_13: '9781635574074',
+      isbn_10: null,
+      asin: null,
+      language: null,
+    },
+  ],
+};
+
 describe('HardcoverSeriesSource', () => {
   let close: () => Promise<void>;
   let url: string;
@@ -141,9 +221,13 @@ describe('HardcoverSeriesSource', () => {
       if (body.query.includes('LibrettoSeriesWorks')) {
         const where = (body.variables as { where: Record<string, unknown> }).where;
         const wantsUnknown = JSON.stringify(where).includes('no-such-series');
+        if (JSON.stringify(where).includes('2211'))
+          return c.json({ data: CRESCENT_SERIES_FIXTURE });
         return c.json({ data: wantsUnknown ? { series: [] } : SERIES_FIXTURE });
       }
       if (body.query.includes('LibrettoBookEditions')) {
+        const ids = (body.variables as { bookIds: number[] }).bookIds;
+        if (ids.includes(465201)) return c.json({ data: CRESCENT_EDITIONS_FIXTURE });
         return c.json({ data: EDITIONS_FIXTURE });
       }
       if (body.query.includes('LibrettoSeriesSearch')) {
@@ -214,6 +298,37 @@ describe('HardcoverSeriesSource', () => {
     expect(works[0]!.credits).toEqual(['James S. A. Corey']);
     expect(works[1]).not.toHaveProperty('credits');
     expect(requests[0]!.query).toContain('cached_contributors');
+  });
+
+  it('leaves out the unmerged Italian edition Hardcover lists unnumbered in Crescent City (haynesnetwork#794)', async () => {
+    const works = await source.seriesWorks('2211');
+    expect(works.map((work) => work.label)).toEqual([
+      'House of Earth and Blood (#1 in Crescent City)',
+      'House of Sky and Breath (#2 in Crescent City)',
+    ]);
+    // The editions query asks for each edition's title and language.
+    const editions = requests.find((r) => r.query.includes('LibrettoBookEditions'))!;
+    expect(editions.query).toContain('title');
+    expect(editions.query).toContain('code2');
+  });
+
+  it('keys the series cache by the language list', async () => {
+    const english = new HardcoverSeriesSource({
+      token: 'hc-token',
+      cache,
+      log: silentLogger,
+      url,
+      languages: languagePolicy(['en']),
+      now: () => 0,
+      sleep: () => Promise.resolve(),
+    });
+    await source.seriesWorks('2211');
+    const before = requests.length;
+    await english.seriesWorks('2211');
+    // Another language list is another entry: resolved afresh, not served the every-language list.
+    expect(requests.length).toBeGreaterThan(before);
+    expect(await cache.get('hardcover:series-works:v6:*:2211')).toBeDefined();
+    expect(await cache.get('hardcover:series-works:v6:en:2211')).toBeDefined();
   });
 
   it('reads authors out of cached_contributors tolerantly', () => {
@@ -349,5 +464,120 @@ describe('HardcoverSeriesSource', () => {
         {},
       ),
     ).rejects.toThrow('hardcover graphql error: unknown operation');
+  });
+});
+
+describe('leftOutSeriesBooks', () => {
+  const english = languagePolicy(['en']);
+  const book = (id: number, title: string, position: number | null) => ({
+    position,
+    book: { id, title },
+  });
+  const edition = (title: string, code2: string | null) => ({
+    title,
+    language: code2 === null ? null : { code2 },
+  });
+
+  it('leaves out an unnumbered book that is a numbered book under another edition title', () => {
+    const left = leftOutSeriesBooks(
+      [
+        book(465201, 'House of Earth and Blood', 1),
+        book(3027642, 'Crescent City - La casa di terra e sangue', null),
+      ],
+      new Map([
+        [
+          465201,
+          [edition('House of Earth and Blood', 'en'), edition('La Casa di Terra e Sangue', 'it')],
+        ],
+      ]),
+      'Crescent City',
+      english,
+    );
+    expect([...left]).toEqual([[3027642, 'duplicate']]);
+  });
+
+  it("leaves out an unnumbered book whose decorated title is a numbered book's title", () => {
+    const left = leftOutSeriesBooks(
+      [book(102, "Caliban's War", 2), book(900, "Caliban's War: The Expanse, Book 2", null)],
+      new Map(),
+      'The Expanse',
+      english,
+    );
+    expect([...left]).toEqual([[900, 'duplicate']]);
+  });
+
+  it('keeps an unnumbered companion that is no numbered book', () => {
+    const left = leftOutSeriesBooks(
+      [
+        book(1, "Harry Potter and the Philosopher's Stone", 1),
+        book(2, 'Harry Potter and the Cursed Child', null),
+      ],
+      new Map([[1, [edition("Harry Potter and the Philosopher's Stone", 'en')]]]),
+      'Harry Potter',
+      english,
+    );
+    expect(left.size).toBe(0);
+  });
+
+  it('never leaves out a numbered book whose title an edition of another book carries', () => {
+    const left = leftOutSeriesBooks(
+      [book(1, 'Book One', 1), book(2, 'Book Two', 2)],
+      new Map([[1, [edition('Book One', 'en'), edition('Book Two', null)]]]),
+      'Series',
+      english,
+    );
+    expect(left.size).toBe(0);
+  });
+
+  it('leaves out a book Hardcover knows only in another language', () => {
+    const left = leftOutSeriesBooks(
+      [book(316971, 'Eragon', 1), book(3020661, 'Guida di Eragon ad Alagaësia', null)],
+      new Map([
+        [316971, [edition('Eragon', 'en')]],
+        [3020661, [edition('Guida di Eragon ad Alagaësia', 'it')]],
+      ]),
+      'The Inheritance Cycle',
+      english,
+    );
+    expect([...left]).toEqual([[3020661, 'language']]);
+  });
+
+  it('keeps an original whose only catalogued edition is a translation under another title', () => {
+    // Live 2026-10-06: Discworld #16.5 "Troll Bridge" has one edition with an identifier, the French "Drame de troll".
+    const left = leftOutSeriesBooks(
+      [book(1, 'Troll Bridge', 16.5)],
+      new Map([[1, [edition('Drame de troll', 'fr')]]]),
+      'Discworld',
+      english,
+    );
+    expect(left.size).toBe(0);
+  });
+
+  it('keeps a book with any edition of unknown language', () => {
+    // Live 2026-10-06: Easy Rawlins #14 "Charcoal Joe" has an Italian edition titled "Charcoal Joe" and an unlabelled one.
+    const left = leftOutSeriesBooks(
+      [book(1, 'Charcoal Joe', 14)],
+      new Map([[1, [edition('Charcoal Joe', 'it'), edition('Charcoal Joe', null)]]]),
+      'Easy Rawlins',
+      english,
+    );
+    expect(left.size).toBe(0);
+  });
+
+  it('keeps every language when the list is off, and still drops duplicates', () => {
+    const left = leftOutSeriesBooks(
+      [
+        book(465201, 'House of Earth and Blood', 1),
+        book(3027642, 'Crescent City - La casa di terra e sangue', null),
+        book(3020661, 'Guida di Eragon ad Alagaësia', null),
+      ],
+      new Map([
+        [465201, [edition('La Casa di Terra e Sangue', 'it')]],
+        [3020661, [edition('Guida di Eragon ad Alagaësia', 'it')]],
+      ]),
+      'Crescent City',
+      languagePolicy(undefined),
+    );
+    expect([...left]).toEqual([[3027642, 'duplicate']]);
   });
 });
