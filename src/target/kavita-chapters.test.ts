@@ -144,6 +144,32 @@ describe('canonical Kavita book chapters', () => {
     ).toEqual([1]);
   });
 
+  it('normalizes known terminal suffix formats while keeping suffix identity', () => {
+    const match: MatchedWork = {
+      itemId: '1',
+      work: { label: 'Book', title: 'Book', identifiers: [], credits: ['Kurt Vonnegut Jr.'] },
+    };
+    const copies = [
+      'Kurt Vonnegut Jr.',
+      'Kurt Vonnegut, Jr.',
+      'Vonnegut, Kurt, Jr.',
+      'Kurt Vonnegut Sr.',
+      'Kurt Vonnegut',
+    ].map((name, index) => ({ id: index + 1, titleName: 'Book', writers: [{ name }] }));
+    expect(selectBookChapters('1', copies, [match]).get(match)).toEqual([1, 2, 3]);
+    const senior = { ...match, work: { ...match.work, credits: ['Kurt Vonnegut Sr.'] } };
+    expect(selectBookChapters('1', copies, [senior]).get(senior)).toEqual([4]);
+    const noSuffix = { ...match, work: { ...match.work, credits: ['Kurt Vonnegut'] } };
+    expect(selectBookChapters('1', copies, [noSuffix]).get(noSuffix)).toEqual([5]);
+    expect(() =>
+      selectBookChapters(
+        '1',
+        [{ id: 1, titleName: 'Book', writers: [{ name: 'Vonnegut, Kurt, PhD' }] }],
+        [match],
+      ),
+    ).toThrow('incomplete book identities');
+  });
+
   it('refuses unknown chapter identities and missing canonical author agreement', () => {
     expect(() =>
       selectBookChapters('160', [chapters[0]!, { id: 185, titleName: 'City of Bones' }], [clare]),

@@ -23,9 +23,14 @@ function authorKey(name: string): string {
       .toLowerCase()
       .replace(/[^\p{L}\p{N}]/gu, '');
   const parts = name.split(',');
-  // Exactly one explicit surname-first comma is a known format. Preserve component order;
-  // extra commas, an empty side or sorting arbitrary name tokens cannot establish identity.
-  if (parts.length > 2 || parts.some((part) => !compact(part))) return '';
+  if (parts.some((part) => !compact(part))) return '';
+  const suffix = ['jr', 'sr', 'ii', 'iii', 'iv', 'v'].includes(compact(parts.at(-1)!));
+  // Preserve a known terminal suffix as identity, including its explicit comma formats.
+  if (parts.length === 2 && suffix) return compact(parts.join(' '));
+  if (parts.length === 3 && suffix) return compact(`${parts[1]} ${parts[0]} ${parts[2]}`);
+  // One surname-first comma is a known format. Other multi-comma credits remain ambiguous;
+  // arbitrary token sorting or discarding a suffix cannot establish full author identity.
+  if (parts.length > 2) return '';
   return compact(parts.length === 2 ? `${parts[1]} ${parts[0]}` : name);
 }
 
