@@ -87,7 +87,7 @@ function noMatchKey(isbn: string | null, title: string, author: string | null): 
       .normalize('NFKD')
       .replace(/[\u0300-\u036f]/g, '')
       .toLowerCase()
-      .replace(/[^\p{L}\p{N}]+/gu, ' ')
+      .replace(/[^\p{L}\p{M}\p{N}]+/gu, ' ')
       .trim();
   return JSON.stringify([
     isbn ? isbn.replace(/[^0-9xX]/g, '').toUpperCase() : '',

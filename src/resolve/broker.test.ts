@@ -229,6 +229,15 @@ describe('resolve broker — honest no_match cache (issue #34)', () => {
     expect(calls.n).toBe(again);
   });
 
+  it('keeps Devanagari titles apart: vowel signs are combining marks and must survive the fold', async () => {
+    const { fetchImpl, calls } = countingFetch(200, { items: [] });
+    const broker = cachedBroker(fetchImpl, { now: 1 });
+    await broker.resolve({ title: 'दिन' });
+    const spent = calls.n;
+    await broker.resolve({ title: 'दान' });
+    expect(calls.n).toBeGreaterThan(spent);
+  });
+
   it('never caches quota_exhausted', async () => {
     const { fetchImpl, calls } = countingFetch(429, QUOTA_BODY);
     const clock = { now: 1 };
