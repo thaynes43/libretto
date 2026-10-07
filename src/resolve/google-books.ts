@@ -66,6 +66,9 @@ export function gbAuthorsMatch(queryAuthor: string, resolvedAuthors: readonly st
   return resolvedAuthors.some((a) => tokens(a).some((t) => q.has(t)));
 }
 
+/** Generational and honorific suffixes that end a name without being its surname ("Kurt Vonnegut Jr."). */
+const NAME_SUFFIXES = new Set(['jr', 'sr', 'ii', 'iii', 'iv', 'phd', 'md', 'esq']);
+
 /** Strict author agreement for the keyword leg, which has no `inauthor:` filter: the queried author's surname (its last
  * name token) must be a name token of a resolved author, so "Walter Mosley" never takes "Walter Dean Myers". */
 export function gbSurnameMatches(queryAuthor: string, resolvedAuthors: readonly string[]): boolean {
@@ -75,7 +78,9 @@ export function gbSurnameMatches(queryAuthor: string, resolvedAuthors: readonly 
       .replace(/[^a-z0-9]+/g, ' ')
       .split(' ')
       .filter((w) => w.length >= 2);
-  const surname = tokens(queryAuthor).at(-1);
+  const surname = tokens(queryAuthor)
+    .filter((t) => !NAME_SUFFIXES.has(t))
+    .at(-1);
   if (!surname) return false;
   return resolvedAuthors.some((a) => tokens(a).includes(surname));
 }

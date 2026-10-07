@@ -663,6 +663,9 @@ describe('the keyword leg (Google Books field search misses a book its plain sea
     expect(gbSurnameMatches('James S. A. Corey', ['James S.A. Corey'])).toBe(true);
     expect(gbSurnameMatches('Ursula K. Le Guin', ['Ursula K. Le Guin'])).toBe(true);
     expect(gbSurnameMatches('Walter Mosley', ['Walter Dean Myers'])).toBe(false);
+    // A suffix is not the surname: Vonnegut matches without the "Jr.", and another "Jr." does not.
+    expect(gbSurnameMatches('Kurt Vonnegut Jr.', ['Kurt Vonnegut'])).toBe(true);
+    expect(gbSurnameMatches('Kurt Vonnegut Jr.', ['Harry Crews Jr.'])).toBe(false);
   });
 
   it('never takes a volume that names no author, or another author', async () => {
