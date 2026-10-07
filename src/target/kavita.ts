@@ -109,7 +109,10 @@ function seriesFingerprint(series: KavitaSeries): string {
 }
 
 interface KavitaVolume {
+  minNumber?: number;
   chapters?: {
+    id?: number;
+    sortOrder?: number;
     isbn?: string | null;
     /** The book's own title (the epub's dc:title); empty when the file names none. */
     titleName?: string | null;
@@ -146,6 +149,7 @@ interface KavitaReadingListItem {
   id: number;
   order: number;
   seriesId: number;
+  chapterId: number;
 }
 
 function collectionId(id: number): string {
@@ -373,7 +377,59 @@ export class KavitaTarget implements TargetClient {
     const items = await this.get<KavitaReadingListItem[]>(
       `/api/ReadingList/items?readingListId=${id}`,
     );
+    if (
+      !Array.isArray(items) ||
+      items.some(
+        (item) =>
+          !Number.isInteger(item.id) ||
+          item.id <= 0 ||
+          !Number.isInteger(item.seriesId) ||
+          item.seriesId <= 0 ||
+          !Number.isInteger(item.chapterId) ||
+          item.chapterId <= 0 ||
+          !Number.isInteger(item.order) ||
+          item.order < 0,
+      )
+    )
+      throw new Error(
+        `kavita reading list ${id}: incomplete item read; leaving existing items intact`,
+      );
     return [...items].sort((a, b) => a.order - b.order);
+  }
+
+  /** Fresh chapter membership, never inferred from the cached book identities or a series id. */
+  private async currentChapterIds(seriesId: string): Promise<number[]> {
+    const volumes = await this.get<KavitaVolume[]>(`/api/Series/volumes?seriesId=${seriesId}`);
+    if (
+      !Array.isArray(volumes) ||
+      volumes.length === 0 ||
+      volumes.some(
+        (volume) =>
+          !Number.isFinite(volume.minNumber) ||
+          !Array.isArray(volume.chapters) ||
+          volume.chapters.length === 0 ||
+          volume.chapters.some((chapter) => !Number.isFinite(chapter.sortOrder)),
+      )
+    )
+      throw new Error(
+        `kavita series ${seriesId}: incomplete chapter read; leaving existing items intact`,
+      );
+    const chapters = volumes
+      .flatMap((volume) =>
+        volume.chapters!.map((chapter) => ({ chapter, minNumber: volume.minNumber! })),
+      )
+      .sort(
+        (a, b) =>
+          a.minNumber - b.minNumber ||
+          a.chapter.sortOrder! - b.chapter.sortOrder! ||
+          (a.chapter.id ?? 0) - (b.chapter.id ?? 0),
+      );
+    const ids = chapters.map(({ chapter }) => chapter.id!);
+    if (ids.some((id) => !Number.isInteger(id) || id <= 0) || new Set(ids).size !== ids.length)
+      throw new Error(
+        `kavita series ${seriesId}: incomplete chapter identities; leaving existing items intact`,
+      );
+    return ids;
   }
 
   async createCollection(input: CreateCollectionInput): Promise<TargetCollection> {
@@ -443,7 +499,7 @@ export class KavitaTarget implements TargetClient {
     const { kind, id } = parseContainerId(containerId);
     return kind === 'collection'
       ? this.updateUnorderedCollection(id, patch.itemIds, patch.description)
-      : this.updateReadingList(id, patch.itemIds, patch.description);
+      : this.updateReadingList(id, patch.itemIds, patch.description, patch.syncMode);
   }
 
   private async updateUnorderedCollection(
@@ -494,44 +550,93 @@ export class KavitaTarget implements TargetClient {
     id: number,
     itemIds: string[],
     description?: string,
+    syncMode: 'append' | 'sync' = 'sync',
   ): Promise<TargetCollection> {
-    const desired = new Set(itemIds);
+    const desiredIds = [...new Set(itemIds)];
+    // Finish every source read before any mutation. A transient empty/malformed detail during a
+    // scan cannot be used as proof that the list should lose its existing chapters.
+    const expected = new Map<string, number[]>();
+    for (const seriesId of desiredIds)
+      expected.set(seriesId, await this.currentChapterIds(seriesId));
+    const original = await this.readingListItems(id);
 
-    // Remove items of series that left the recipe.
-    for (const item of await this.readingListItems(id)) {
-      if (desired.has(String(item.seriesId))) continue;
-      await this.post('/api/ReadingList/delete-item', {
-        readingListId: id,
-        readingListItemId: item.id,
-        fromPosition: item.order,
-        toPosition: item.order,
-      });
-    }
-
-    // Append series that are new (update-by-series appends all its chapters).
-    const present = new Set((await this.readingListItems(id)).map((item) => String(item.seriesId)));
-    for (const seriesId of itemIds) {
-      if (present.has(seriesId)) continue;
+    // Add missing chapters even under a retained series id. Kavita update-by-series itself skips
+    // chapter ids already in the list; surviving items keep their ids and per-item progress.
+    for (const [seriesId, chapters] of expected) {
+      const present = new Set(
+        original.filter((item) => String(item.seriesId) === seriesId).map((item) => item.chapterId),
+      );
+      if (chapters.every((chapter) => present.has(chapter))) continue;
       await this.post('/api/ReadingList/update-by-series', {
         readingListId: id,
         seriesId: Number(seriesId),
       });
     }
 
-    // Reorder to the source order: group items by series (keeping in-series
-    // chapter order) and walk the list into place with update-position moves.
+    // Verify the additions before removing stale references. A partial or rejected append leaves
+    // the old list intact, including chapters that no longer appear in the source detail.
+    const items = await this.readingListItems(id);
+    for (const [seriesId, chapters] of expected) {
+      if (
+        chapters.some(
+          (chapterId) =>
+            !items.some(
+              (item) => String(item.seriesId) === seriesId && item.chapterId === chapterId,
+            ),
+        )
+      )
+        throw new Error(
+          `kavita reading list ${id}: chapter additions not confirmed; leaving existing items intact`,
+        );
+    }
+    const working = [...items];
+    const seen = new Set<string>();
+    if (syncMode === 'sync') {
+      // A scan can replace chapters while we are appending. Confirm that every desired series
+      // still has the same complete membership before trusting absence as a reason to delete.
+      for (const [seriesId, chapters] of expected) {
+        const confirmed = await this.currentChapterIds(seriesId);
+        if (
+          confirmed.length !== chapters.length ||
+          confirmed.some((chapter, index) => chapter !== chapters[index])
+        )
+          throw new Error(
+            `kavita series ${seriesId}: chapters changed during reconcile; leaving existing items intact`,
+          );
+      }
+      for (const item of items) {
+        const chapters = expected.get(String(item.seriesId));
+        const key = `${item.seriesId}:${item.chapterId}`;
+        const retain = chapters?.includes(item.chapterId) && !seen.has(key);
+        seen.add(key);
+        if (retain) continue;
+        const position = working.findIndex((entry) => entry.id === item.id);
+        await this.post('/api/ReadingList/delete-item', {
+          readingListId: id,
+          readingListItemId: item.id,
+          fromPosition: position,
+          toPosition: position,
+        });
+        working.splice(position, 1);
+      }
+    }
+
+    // Reorder to the source series and chapter order, preserving distinct chapter ids for duplicate
+    // files. Append retains all old entries and their order and puts additions at the end.
     // Kavita re-packs orders to contiguous 0-based values after every mutation,
     // so array index == order here.
-    const items = await this.readingListItems(id);
-    const bySeries = new Map<string, KavitaReadingListItem[]>();
-    for (const item of items) {
-      const key = String(item.seriesId);
-      const group = bySeries.get(key) ?? [];
-      group.push(item);
-      bySeries.set(key, group);
-    }
-    const target = itemIds.flatMap((seriesId) => bySeries.get(seriesId) ?? []);
-    const working = [...items];
+    const target =
+      syncMode === 'append'
+        ? working
+        : desiredIds.flatMap((seriesId) =>
+            expected
+              .get(seriesId)!
+              .map((chapterId) =>
+                working.find(
+                  (item) => String(item.seriesId) === seriesId && item.chapterId === chapterId,
+                )!,
+              ),
+          );
     for (let i = 0; i < target.length; i++) {
       if (working[i]!.id === target[i]!.id) continue;
       const from = working.findIndex((item) => item.id === target[i]!.id);

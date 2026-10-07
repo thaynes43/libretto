@@ -20,6 +20,8 @@ export interface KavitaStubSeries {
   pages: number;
   /** Chapter ISBNs, possibly empty/null entries (EPUB3 scheme gaps). */
   chapterIsbns: (string | null)[];
+  /** Stable chapter ids; a scan may replace them while retaining the series id. */
+  chapterIds?: number[];
   /** Per chapter (same order as chapterIsbns): its own title, Writer credits and file path. */
   chapters?: { titleName?: string; writers?: string[]; filePath?: string }[];
   /** SeriesDto `lastFolderScanned` (moves on a scan of the series). */
@@ -39,7 +41,7 @@ interface KavitaStubReadingList {
   title: string;
   summary: string | null;
   promoted: boolean;
-  items: { id: number; seriesId: number }[];
+  items: { id: number; seriesId: number; chapterId: number }[];
 }
 
 export class KavitaStub {
@@ -54,6 +56,9 @@ export class KavitaStub {
   private collections = new Map<number, KavitaStubCollection>();
   private readingLists = new Map<number, KavitaStubReadingList>();
   private nextId = 1000;
+  private incompleteSeriesDetails = new Set<number>();
+  suppressChapterAdds = false;
+  afterChapterAdd?: () => void;
 
   constructor(private readonly apiKey: string) {
     this.app.post('/api/Plugin/authenticate', (c) => {
@@ -111,13 +116,16 @@ export class KavitaStub {
 
     this.app.get('/api/Series/volumes', (c) => {
       const one = this.series.find((s) => s.id === Number(c.req.query('seriesId')));
-      if (!one) return c.json([], 200);
+      if (!one || this.incompleteSeriesDetails.has(one.id)) return c.json([], 200);
       return c.json([
         {
           id: one.id * 10,
+          minNumber: 0,
           chapters: one.chapterIsbns.map((isbn, index) => {
             const chapter = one.chapters?.[index];
             return {
+              id: one.chapterIds?.[index] ?? one.id * 1000 + index,
+              sortOrder: index,
               isbn,
               titleName: chapter?.titleName ?? '',
               writers: (chapter?.writers ?? []).map((name) => ({ name })),
@@ -241,9 +249,14 @@ export class KavitaStub {
       const list = this.readingLists.get(body.readingListId);
       const series = this.series.find((one) => one.id === body.seriesId);
       if (!list || !series) return c.json({ message: 'not found' }, 400);
+      if (this.suppressChapterAdds) return c.body(null, 200);
       for (let chapter = 0; chapter < series.chapterIsbns.length; chapter++) {
-        list.items.push({ id: this.nextId++, seriesId: series.id });
+        const chapterId = series.chapterIds?.[chapter] ?? series.id * 1000 + chapter;
+        // Kavita's real update-by-series appends only chapter ids that are not already present.
+        if (!list.items.some((item) => item.chapterId === chapterId))
+          list.items.push({ id: this.nextId++, seriesId: series.id, chapterId });
       }
+      this.afterChapterAdd?.();
       return c.body(null, 200);
     });
 
@@ -255,6 +268,7 @@ export class KavitaStub {
           id: item.id,
           order: index,
           seriesId: item.seriesId,
+          chapterId: item.chapterId,
           seriesName: this.series.find((one) => one.id === item.seriesId)?.name ?? '',
         })),
       );
@@ -315,6 +329,19 @@ export class KavitaStub {
     if (series) series.pages = pages;
   }
 
+  /** Test lever: scanner replacements/additions, leaving the series id and page count untouched. */
+  setSeriesChapterIds(id: number, ids: number[]): void {
+    const series = this.series.find((one) => one.id === id);
+    if (!series) return;
+    series.chapterIds = [...ids];
+    series.chapterIsbns = ids.map((_, index) => series.chapterIsbns[index] ?? null);
+  }
+
+  setSeriesDetailIncomplete(id: number, incomplete: boolean): void {
+    if (incomplete) this.incompleteSeriesDetails.add(id);
+    else this.incompleteSeriesDetails.delete(id);
+  }
+
   seedCollection(input: Omit<KavitaStubCollection, 'id'> & { id?: number }): number {
     const id = input.id ?? this.nextId++;
     this.collections.set(id, { ...input, id, seriesIds: [...input.seriesIds] });
@@ -328,7 +355,11 @@ export class KavitaStub {
     const items = input.seriesIds.flatMap((seriesId) => {
       const series = this.series.find((one) => one.id === seriesId);
       const chapters = Math.max(1, series?.chapterIsbns.length ?? 1);
-      return Array.from({ length: chapters }, () => ({ id: this.nextId++, seriesId }));
+      return Array.from({ length: chapters }, (_, index) => ({
+        id: this.nextId++,
+        seriesId,
+        chapterId: series?.chapterIds?.[index] ?? seriesId * 1000 + index,
+      }));
     });
     this.readingLists.set(id, {
       id,
