@@ -49,6 +49,70 @@ describe('canonical Kavita book chapters', () => {
     ).toThrow('no longer verified');
   });
 
+  it('excludes same-title books sharing only a first name or surname', () => {
+    for (const [canonical, foreign] of [
+      ['John Grisham', 'John Adams'],
+      ['Frank Herbert', 'Brian Herbert'],
+    ] as const) {
+      const match: MatchedWork = {
+        itemId: '1',
+        work: { label: 'Same title', title: 'Same title', identifiers: [], credits: [canonical] },
+      };
+      const copies = [
+        { id: 1, titleName: 'Same title', writers: [{ name: canonical }] },
+        { id: 2, titleName: 'Same title', writers: [{ name: foreign }] },
+      ];
+      expect(selectBookChapters('1', copies, [match]).get(match)).toEqual([1]);
+    }
+  });
+
+  it('confirms full names despite case, accents, punctuation and initial spacing', () => {
+    const match: MatchedWork = {
+      itemId: '1',
+      work: { label: 'Book', title: 'Book', identifiers: [], credits: ['J.K. Rówling'] },
+    };
+    expect(
+      selectBookChapters(
+        '1',
+        [{ id: 1, titleName: 'Book', writers: [{ name: 'j. k. rowling' }] }],
+        [match],
+      ).get(match),
+    ).toEqual([1]);
+    expect(() =>
+      selectBookChapters(
+        '1',
+        [{ id: 1, titleName: 'Book', writers: [{ name: 'Joanne Kathleen Rowling' }] }],
+        [match],
+      ),
+    ).toThrow('no longer verified');
+  });
+
+  it('accepts an equal ISBN even when the author metadata spells an expanded name', () => {
+    const match: MatchedWork = {
+      itemId: '1',
+      work: {
+        label: 'Book',
+        title: 'Book',
+        identifiers: ['isbn:9780747532743'],
+        credits: ['J.K. Rowling'],
+      },
+    };
+    expect(
+      selectBookChapters(
+        '1',
+        [
+          {
+            id: 1,
+            isbn: '9780747532743',
+            titleName: 'Book',
+            writers: [{ name: 'Joanne Kathleen Rowling' }],
+          },
+        ],
+        [match],
+      ).get(match),
+    ).toEqual([1]);
+  });
+
   it('refuses unknown chapter identities and missing canonical author agreement', () => {
     expect(() =>
       selectBookChapters('160', [chapters[0]!, { id: 185, titleName: 'City of Bones' }], [clare]),
