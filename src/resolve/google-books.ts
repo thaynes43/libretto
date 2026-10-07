@@ -17,6 +17,9 @@
  *      A guard failure returns null (an honest gap), never a wrong-work volume id.
  *   3. Pre-colon fallback on a miss ("Dead Ever After: A Sookie Stackhouse Novel" -> "Dead Ever
  *      After") — colon subtitles are often edition dressing GB does not index under.
+ *   4. Keyword fallback when the member names its author: a plain `<title> <author>` search, the first of
+ *      its top results that passes every guard, with the title agreeing both ways and an author required.
+ *      Google Books' field search can miss books its plain search finds (2026-10-07).
  *
  * The GB volume id it returns IS the LazyLibrarian addBook key (LL BookID is a GB volume id), so the
  * acquisition leg can drive `addBook(<volumeId>)` — the reliable ingestion path — instead of the
@@ -353,8 +356,12 @@ export function parseGbError(bodyText: string): GbErrorInfo {
 export function isDailyQuotaExhausted(info: GbErrorInfo): boolean {
   const reason = (info.reason ?? '').toLowerCase();
   if (reason === 'dailylimitexceeded' || reason === 'quotaexceeded') return true;
-  if ((info.gbStatus ?? '').toUpperCase() === 'RESOURCE_EXHAUSTED') return true;
   const message = (info.message ?? '').toLowerCase();
+  // A per-minute (or per-second) window is a burst, even when Google labels it RESOURCE_EXHAUSTED: "Quota exceeded
+  // for quota metric 'Queries' and limit 'Queries per minute per user'" latched the 15-minute breaker on 2026-10-07
+  // and every resolve after it in that pass came back quota_exhausted. The retry/backoff handles it.
+  if (/per (?:minute|second|100 seconds)/.test(message)) return false;
+  if ((info.gbStatus ?? '').toUpperCase() === 'RESOURCE_EXHAUSTED') return true;
   return /quer(?:y|ies) per day|daily limit/.test(message);
 }
 
@@ -623,7 +630,38 @@ export class GoogleBooksResolver {
     if (primary) return primary;
     const preColon = input.title.split(':')[0]?.trim();
     if (preColon && preColon.length >= 3 && preColon !== input.title.trim()) {
-      return accept(await this.resolveByTitle(gbQueryTitle(preColon), input));
+      const fallback = accept(await this.resolveByTitle(gbQueryTitle(preColon), input));
+      if (fallback) return fallback;
+    }
+    return this.resolveByKeywords(gbQueryTitle(input.title), input, accept);
+  }
+
+  /**
+   * The keyword leg (2026-10-07): a plain `<title> <author>` search, tried last and only when the member names its
+   * author. Google Books' field search (`intitle:`, `inauthor:`, `isbn:`) answered `200 totalItems:0` for books it
+   * holds (Walter Mosley's Gray Dawn, Hugh Howey's Shift, even `intitle:Wool`) while a plain search found them first,
+   * so the field legs alone left those wants unresolved. A plain search ranks loosely, so this leg is stricter than the
+   * field leg: it reads the top results in order and takes the first that passes every guard, the volume must name an
+   * author that matches, and the title must agree both ways (the volume's own title is mostly the queried one, so
+   * "Shift" never takes "First Shift: Legacy").
+   */
+  private async resolveByKeywords(
+    queryTitle: string,
+    input: GbResolveInput,
+    accept: (vol: GbVolume | null) => GbVolume | null,
+  ): Promise<GbVolume | null> {
+    const author = input.author?.trim();
+    if (!author) return null;
+    const vols = await this.query(`${queryTitle} ${author}`);
+    for (const vol of vols) {
+      const authors = vol.volumeInfo?.authors ?? [];
+      if (authors.length === 0 || !gbAuthorsMatch(author, authors)) continue;
+      const mainTitle = vol.volumeInfo?.title;
+      if (!mainTitle || !gbResolveTitleMatches(mainTitle, queryTitle)) continue;
+      const guarded = this.guardTitleHit(vol, queryTitle, input);
+      if (!guarded) continue;
+      const hit = accept(guarded);
+      if (hit) return hit;
     }
     return null;
   }
@@ -635,6 +673,11 @@ export class GoogleBooksResolver {
     const authorPart = input.author ? `+inauthor:${input.author}` : '';
     const [vol] = await this.query(`intitle:${queryTitle}${authorPart}`);
     if (!vol) return null;
+    return this.guardTitleHit(vol, queryTitle, input);
+  }
+
+  /** The title-search guards (coverage, omnibus, volume number, author): the volume, or null when one rejects it. */
+  private guardTitleHit(vol: Volume, queryTitle: string, input: GbResolveInput): GbVolume | null {
     const resolvedTitle = [vol.volumeInfo?.title, vol.volumeInfo?.subtitle]
       .filter(Boolean)
       .join(' ');

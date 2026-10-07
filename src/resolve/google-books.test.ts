@@ -182,6 +182,16 @@ describe('parseGbError / isDailyQuotaExhausted', () => {
     expect(isDailyQuotaExhausted({ reason: 'rateLimitExceeded' })).toBe(false);
     expect(isDailyQuotaExhausted({ reason: 'userRateLimitExceeded' })).toBe(false);
   });
+  it('does NOT flag the per-minute limit as daily exhaustion, though Google calls it RESOURCE_EXHAUSTED', () => {
+    expect(
+      isDailyQuotaExhausted({
+        reason: 'rateLimitExceeded',
+        gbStatus: 'RESOURCE_EXHAUSTED',
+        message:
+          "Quota exceeded for quota metric 'Queries' and limit 'Queries per minute per user' of service 'books.googleapis.com' for consumer 'project_number:1'.",
+      }),
+    ).toBe(false);
+  });
   it('flags a legacy 403 dailyLimitExceeded and a bare RESOURCE_EXHAUSTED', () => {
     expect(isDailyQuotaExhausted({ reason: 'quotaExceeded' })).toBe(true);
     expect(isDailyQuotaExhausted({ gbStatus: 'RESOURCE_EXHAUSTED' })).toBe(true);
@@ -605,5 +615,81 @@ describe('GoogleBooksResolver language check (issue #26)', () => {
     });
     expect(detail.volume?.volumeId).toBe('VOL_LW');
     expect(detail.refused).toBe(false);
+  });
+});
+
+describe('the keyword leg (Google Books field search misses a book its plain search finds, 2026-10-07)', () => {
+  it('resolves by a plain title + author search when every field leg comes back empty', async () => {
+    const { fetchImpl, queries } = fakeFetch({
+      'Gray Dawn Walter Mosley': [
+        vol('VOL_TERHUNE', 'Gray Dawn', ['Albert Payson Terhune']),
+        vol('VOL_MOSLEY', 'Gray Dawn', ['Walter Mosley'], '9780316573238'),
+      ],
+    });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    const out = await r.resolveVolume({
+      isbn: '9780316573238',
+      title: 'Gray Dawn',
+      author: 'Walter Mosley',
+    });
+    expect(out).toEqual({ volumeId: 'VOL_MOSLEY', isbn13: '9780316573238', via: 'title' });
+    expect(queries).toEqual([
+      'isbn:9780316573238',
+      'intitle:Gray Dawn+inauthor:Walter Mosley',
+      'Gray Dawn Walter Mosley',
+    ]);
+  });
+
+  it('needs the titles to agree both ways, so "Shift" never takes "First Shift: Legacy" or the omnibus', async () => {
+    const { fetchImpl } = fakeFetch({
+      'Shift Hugh Howey': [
+        vol('VOL_FIRST', 'First Shift', ['Hugh Howey']),
+        vol('VOL_OMNI', 'Shift Omnibus Edition', ['Hugh Howey']),
+        vol('VOL_SHIFT', 'Shift', ['Hugh Howey']),
+      ],
+    });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    const out = await r.resolveVolume({ title: 'Shift', author: 'Hugh Howey' });
+    expect(out?.volumeId).toBe('VOL_SHIFT');
+  });
+
+  it('never takes a volume that names no author, or another author', async () => {
+    const { fetchImpl } = fakeFetch({
+      'Compulsory Martha Wells': [
+        vol('VOL_ANON', 'Compulsory'),
+        vol('VOL_OTHER', 'Compulsory', ['Someone Else']),
+      ],
+    });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    expect(await r.resolveVolume({ title: 'Compulsory', author: 'Martha Wells' })).toBeNull();
+  });
+
+  it('is not tried without an author', async () => {
+    const { fetchImpl, queries } = fakeFetch({});
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    expect(await r.resolveVolume({ title: 'Gray Dawn' })).toBeNull();
+    expect(queries).toEqual(['intitle:Gray Dawn']);
+  });
+
+  it('applies the language check to each result it reads', async () => {
+    const { fetchImpl } = fakeFetch({
+      'Gray Dawn Walter Mosley': [
+        {
+          ...vol('VOL_FR', 'Gray Dawn', ['Walter Mosley']),
+          volumeInfo: { title: 'Gray Dawn', authors: ['Walter Mosley'], language: 'fr' },
+        },
+        {
+          ...vol('VOL_EN', 'Gray Dawn', ['Walter Mosley']),
+          volumeInfo: { title: 'Gray Dawn', authors: ['Walter Mosley'], language: 'en' },
+        },
+      ],
+    });
+    const r = new GoogleBooksResolver({ apiKey: 'k', fetchImpl });
+    const out = await r.resolveVolumeDetail({
+      title: 'Gray Dawn',
+      author: 'Walter Mosley',
+      acceptLanguage: (l) => l === 'en',
+    });
+    expect(out.volume?.volumeId).toBe('VOL_EN');
   });
 });
