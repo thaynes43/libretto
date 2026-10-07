@@ -44,6 +44,11 @@ export interface AppConfig {
   googleBooksApiKey: string | undefined;
   /** Google Books base URL (override for tests/hermetic e2e; default the real API). */
   googleBooksUrl: string | undefined;
+  /**
+   * How long the resolve broker remembers an honest Google Books `no_match`, in ms (LIBRETTO_RESOLVE_NO_MATCH_TTL_MS;
+   * issue #34, owner ruling 2026-10-07: 24 hours). In-process only; 0 turns the cache off.
+   */
+  resolveNoMatchTtlMs: number;
   /** Max acquisition actions (LL adds + queue-drives) per recipe run (M3 pacing). */
   acquisitionCapPerRun: number;
   /** Spacing between LazyLibrarian write calls, ms (estate politeness). */
@@ -83,6 +88,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     nytApiKey: env.NYT_API_KEY || undefined,
     googleBooksApiKey: env.GOOGLE_BOOKS_API_KEY || undefined,
     googleBooksUrl: env.GOOGLE_BOOKS_URL || undefined,
+    resolveNoMatchTtlMs: nonNegativeInt(env.LIBRETTO_RESOLVE_NO_MATCH_TTL_MS, 24 * 60 * 60 * 1000),
     acquisitionCapPerRun: positiveInt(env.LIBRETTO_ACQUISITION_CAP_PER_RUN, 10),
     acquisitionIntervalMs: positiveInt(env.LIBRETTO_ACQUISITION_INTERVAL_MS, 3000),
     acquisitionLanguages: parseAcquisitionLanguages(env.LIBRETTO_ACQUISITION_LANGUAGES),
@@ -93,6 +99,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 function positiveInt(raw: string | undefined, fallback: number): number {
   const value = Number(raw);
   return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+/** Parse a non-negative integer env var (0 is meaningful), falling back to `fallback` on unset/invalid input. */
+function nonNegativeInt(raw: string | undefined, fallback: number): number {
+  if (raw === undefined || raw.trim() === '') return fallback;
+  const value = Number(raw);
+  return Number.isInteger(value) && value >= 0 ? value : fallback;
 }
 
 /** Create the config-volume layout if it does not exist yet. */
