@@ -24,6 +24,7 @@ import {
   UnknownBuilderError,
 } from '../builders/index.js';
 import { findCompilations, listsOneSeries } from '../core/compilation.js';
+import { findUnnumbered } from '../core/unnumbered.js';
 import { matchWorks, recipeMatchOptions, toMissingMember, toPreviewMember } from '../core/match.js';
 import type { ResolveBroker } from '../resolve/broker.js';
 
@@ -292,13 +293,15 @@ export function createApp(deps: AppDeps): Hono {
       missing?: ReturnType<typeof toMissingMember>[];
       compilationCount?: number;
       compilations?: ReturnType<typeof toMissingMember>[];
+      unnumberedCount?: number;
+      unnumbered?: ReturnType<typeof toMissingMember>[];
       error?: string;
     }
     const perTarget: MissingTargetEntry[] = [];
     for (const { server, libraryId } of recipe.targets) {
       try {
         const items = await targets.for(server).listItems(libraryId);
-        const { matchedIds, missingWorks, compilationWorks } = matchWorks(
+        const { matchedIds, missingWorks, compilationWorks, unnumberedWorks } = matchWorks(
           works,
           items,
           recipeMatchOptions(recipe),
@@ -310,7 +313,9 @@ export function createApp(deps: AppDeps): Hono {
           missingCount: missingWorks.length,
           missing: missingWorks.map((work) => toMissingMember(work)),
           compilationCount: compilationWorks.length,
-          compilations: compilationWorks.map((work) => toMissingMember(work, true)),
+          compilations: compilationWorks.map((work) => toMissingMember(work, 'compilation')),
+          unnumberedCount: unnumberedWorks.length,
+          unnumbered: unnumberedWorks.map((work) => toMissingMember(work, 'unnumbered')),
         });
       } catch (error) {
         const message =
@@ -328,8 +333,8 @@ export function createApp(deps: AppDeps): Hono {
     return c.json({
       recipeId: recipe.id,
       name: recipe.name,
-      // total = every resolved member, compilations included: heldCount + missingCount +
-      // compilationCount (unheld) accounts for it, whichever target is primary.
+      // total = every resolved member, compilations and unnumbered books included: heldCount + missingCount +
+      // compilationCount + unnumberedCount (unheld) accounts for it, whichever target is primary.
       total: works.length,
       server: primary.server,
       libraryId: primary.libraryId,
@@ -338,6 +343,8 @@ export function createApp(deps: AppDeps): Hono {
       missing: primary.missing,
       compilationCount: primary.compilationCount,
       compilations: primary.compilations,
+      unnumberedCount: primary.unnumberedCount,
+      unnumbered: primary.unnumbered,
       targets: perTarget,
     });
   });
@@ -424,14 +431,25 @@ export function createApp(deps: AppDeps): Hono {
     } catch (error) {
       return c.json({ error: error instanceof Error ? error.message : String(error) }, 502);
     }
-    const compilations = listsOneSeries(parsed.data.builder)
-      ? findCompilations(works)
-      : new Set<(typeof works)[number]>();
+    const oneSeries = listsOneSeries(parsed.data.builder);
+    const compilations = oneSeries ? findCompilations(works) : new Set<(typeof works)[number]>();
+    const unnumbered = oneSeries ? findUnnumbered(works) : new Set<(typeof works)[number]>();
     return c.json({
       builder: parsed.data.builder,
       total: works.length,
       truncated: works.length > limit,
-      members: works.slice(0, limit).map((work) => toPreviewMember(work, compilations.has(work))),
+      members: works
+        .slice(0, limit)
+        .map((work) =>
+          toPreviewMember(
+            work,
+            compilations.has(work)
+              ? 'compilation'
+              : unnumbered.has(work)
+                ? 'unnumbered'
+                : undefined,
+          ),
+        ),
     });
   });
 

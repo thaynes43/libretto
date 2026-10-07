@@ -60,11 +60,14 @@ export async function reconcileTarget(
   // the missing endpoint also uses, so a member counted `missing` here is exactly one it reports.
   const options = recipeMatchOptions(recipe);
   const grain = options.grain;
-  const { matchedIds, matchedSeen, matchedByTitle, missingWorks, compilationWorks } = matchWorks(
-    works,
-    items,
-    options,
-  );
+  const {
+    matchedIds,
+    matchedSeen,
+    matchedByTitle,
+    missingWorks,
+    compilationWorks,
+    unnumberedWorks,
+  } = matchWorks(works, items, options);
   const missing = missingWorks.map((work) => work.label);
   if (matchedByTitle > 0) {
     log.info(
@@ -79,6 +82,13 @@ export async function reconcileTarget(
     log.info(
       { recipeId: recipe.id, server, compilations: compilationWorks.map((work) => work.label) },
       'compilation editions of listed members are not reported missing',
+    );
+  }
+
+  if (unnumberedWorks.length > 0) {
+    log.info(
+      { recipeId: recipe.id, server, unnumbered: unnumberedWorks.map((work) => work.label) },
+      'unnumbered series books are members but are not reported missing or acquired',
     );
   }
 

@@ -324,12 +324,12 @@ describe('API', () => {
       expect(payload.missingCount).toBe(0);
     });
 
-    describe('compilation editions (libretto#18)', () => {
+    describe('compilation editions (libretto#18) and unnumbered series books (libretto#30)', () => {
       // A hardcover_series source whose list is `works`, against the seeded Book 1..5 library.
       async function missingFor(
         recipeId: string,
         builder: Record<string, unknown>,
-        works: { title: string; isbn: string }[],
+        works: { title: string; isbn: string; series?: string; position?: number }[],
       ) {
         const tmp = await makeTempDir();
         const config = loadConfig({
@@ -347,6 +347,8 @@ describe('API', () => {
                   identifiers: [`isbn:${work.isbn}`],
                   label: work.title,
                   title: work.title,
+                  ...(work.series === undefined ? {} : { series: work.series }),
+                  ...(work.position === undefined ? {} : { position: work.position }),
                 })),
               ),
           },
@@ -373,15 +375,29 @@ describe('API', () => {
         const res = await testApp.request(`/api/collections/${recipeId}/missing`, {
           headers: auth,
         });
+        const previewRes = await testApp.request('/api/preview', {
+          method: 'POST',
+          headers: jsonHeaders,
+          body: JSON.stringify({ builder }),
+        });
         s.stop();
         await tmp.cleanup();
-        return (await res.json()) as {
-          total: number;
-          heldCount: number;
-          missingCount: number;
-          missing: { label: string }[];
-          compilationCount: number;
-          compilations: { label: string; isbn: string | null; compilation: boolean }[];
+        const preview = (await previewRes.json()) as {
+          members: { label: string; compilation?: boolean; unnumbered?: boolean }[];
+        };
+        return {
+          ...((await res.json()) as {
+            total: number;
+            heldCount: number;
+            missingCount: number;
+            missing: { label: string }[];
+            compilationCount: number;
+            compilations: { label: string; isbn: string | null; compilation: boolean }[];
+            unnumberedCount: number;
+            unnumbered: { label: string; isbn: string | null; unnumbered: boolean }[];
+            targets: { unnumberedCount: number; unnumbered: { label: string }[] }[];
+          }),
+          preview,
         };
       }
 
@@ -400,6 +416,33 @@ describe('API', () => {
         expect(payload.compilationCount).toBe(1);
         expect(payload.compilations).toMatchObject([
           { label: 'Shatter Me Series: 1-5', isbn: '9780062372703', compilation: true },
+        ]);
+        expect(payload.unnumberedCount).toBe(0);
+        expect(payload.preview.members.filter((m) => m.compilation).map((m) => m.label)).toEqual([
+          'Shatter Me Series: 1-5',
+        ]);
+      });
+
+      it('a series recipe keeps its unnumbered books out of missing[] and flags them', async () => {
+        const payload = await missingFor('throne-of-glass', series, [
+          { title: 'Book 1', isbn: '1', series: 'S', position: 1 },
+          { title: 'Book 99', isbn: '99', series: 'S', position: 2 },
+          { title: 'The Throne of Glass Coloring Book', isbn: '9781681198019', series: 'S' },
+          { title: 'Book 5', isbn: '5', series: 'S' }, // a HELD unnumbered book stays a member
+        ]);
+        expect(payload.missing.map((m) => m.label)).toEqual(['Book 99']);
+        expect(payload.missingCount).toBe(1);
+        expect(payload.heldCount).toBe(2);
+        expect(payload.total).toBe(4);
+        expect(payload.compilationCount).toBe(0);
+        expect(payload.unnumberedCount).toBe(1);
+        expect(payload.unnumbered).toMatchObject([
+          { label: 'The Throne of Glass Coloring Book', isbn: '9781681198019', unnumbered: true },
+        ]);
+        expect(payload.targets[0]!.unnumberedCount).toBe(1);
+        expect(payload.preview.members.filter((m) => m.unnumbered).map((m) => m.label)).toEqual([
+          'The Throne of Glass Coloring Book',
+          'Book 5',
         ]);
       });
 

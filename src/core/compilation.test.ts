@@ -56,7 +56,7 @@ describe('compilations in the missing report (the two issue recipes)', () => {
     const r = matchWorks(works, held(['Unravel Me']), { titleFallback: true, oneSeries: true });
     expect(r.missingWorks.map((x) => x.label)).toEqual(['Shatter Me']);
     expect(r.compilationWorks.map((x) => x.label)).toEqual(['Shatter Me Series: 1-5']);
-    expect(toMissingMember(r.compilationWorks[0]!, true)).toMatchObject({
+    expect(toMissingMember(r.compilationWorks[0]!, 'compilation')).toMatchObject({
       isbn: '9780062372703',
       compilation: true,
     });

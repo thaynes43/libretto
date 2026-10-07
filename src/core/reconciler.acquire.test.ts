@@ -6,7 +6,14 @@ import { reconcileRecipe } from './reconciler.js';
 
 /** A hardcover builder context returning crafted works, mirroring reconciler.test.ts. */
 const ctxFor = (
-  works: { identifiers: string[]; label: string; title?: string; authors?: string[] }[],
+  works: {
+    identifiers: string[];
+    label: string;
+    title?: string;
+    authors?: string[];
+    series?: string;
+    position?: number;
+  }[],
 ) => ({ hardcoverSeries: { seriesWorks: () => Promise.resolve(works) } });
 
 const acquireCtx = (client: FakeLazyLibrarian): AcquireContext => ({
@@ -83,6 +90,49 @@ describe('reconcileRecipe — M3 acquisition wiring', () => {
     );
     expect(result.acquisition?.queued).toBe(1);
     expect(ll.calls.every((c) => c.format === 'audiobook')).toBe(true);
+  });
+
+  it('never acquires an unnumbered series book (libretto#30), and a held one stays in the collection', async () => {
+    const target = makeSeededTarget(); // items isbn:1..5
+    const ll = new FakeLazyLibrarian([
+      llBook({ bookId: 'B2', title: 'Book 99', isbn: '9780441172719', ebookStatus: 'Skipped' }),
+      llBook({
+        bookId: 'BC',
+        title: 'Coloring Book',
+        isbn: '9781681198019',
+        ebookStatus: 'Skipped',
+      }),
+    ]);
+    const series = 'Stub Series';
+    const works = [
+      { identifiers: ['isbn:1'], label: 'Book 1', title: 'Book 1', series, position: 1 },
+      {
+        identifiers: ['isbn:9780441172719'],
+        label: 'Book 99',
+        title: 'Book 99',
+        series,
+        position: 2,
+      },
+      {
+        identifiers: ['isbn:9781681198019'],
+        label: 'Coloring Book',
+        title: 'Coloring Book',
+        series,
+      },
+      { identifiers: ['isbn:5'], label: 'Book 5 Companion', title: 'Book 5 Companion', series },
+    ];
+
+    const result = await reconcileRecipe(
+      acquiringRecipe(),
+      target,
+      silentLogger,
+      ctxFor(works),
+      acquireCtx(ll),
+    );
+
+    expect(result.missing).toEqual(['Book 99']);
+    expect(result.counts.matched).toBe(2); // Book 1 and the held unnumbered companion (isbn:5)
+    expect(ll.calls.map((c) => c.id)).toEqual(['B2', 'B2']);
   });
 
   it('does NOT acquire when acquisitionEnabled is false (no acquisition field, no LL calls)', async () => {
