@@ -170,6 +170,27 @@ describe('canonical Kavita book chapters', () => {
     ).toThrow('incomplete book identities');
   });
 
+  it('keeps dotted given-name initials separate from Roman numeral suffixes', () => {
+    for (const [canonical, formatted] of [
+      ['V. Woolf', 'Woolf, V.'],
+      ['I.V. Smith', 'Smith, I.V.'],
+      ['John Smith V', 'John Smith, V'],
+      ['John Smith IV', 'Smith, John, IV'],
+    ] as const) {
+      const match: MatchedWork = {
+        itemId: '1',
+        work: { label: 'Book', title: 'Book', identifiers: [], credits: [canonical] },
+      };
+      expect(
+        selectBookChapters(
+          '1',
+          [{ id: 1, titleName: 'Book', writers: [{ name: formatted }] }],
+          [match],
+        ).get(match),
+      ).toEqual([1]);
+    }
+  });
+
   it('refuses unknown chapter identities and missing canonical author agreement', () => {
     expect(() =>
       selectBookChapters('160', [chapters[0]!, { id: 185, titleName: 'City of Bones' }], [clare]),

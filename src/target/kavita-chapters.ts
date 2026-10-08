@@ -24,7 +24,9 @@ function authorKey(name: string): string {
       .replace(/[^\p{L}\p{N}]/gu, '');
   const parts = name.split(',');
   if (parts.some((part) => !compact(part))) return '';
-  const suffix = ['jr', 'sr', 'ii', 'iii', 'iv', 'v'].includes(compact(parts.at(-1)!));
+  // Inspect the explicit format before removing punctuation: V. and I.V. are initials,
+  // whereas undotted Roman numerals are the closed suffix forms we can recognize.
+  const suffix = /^(?:jr|sr)\.?$|^(?:ii|iii|iv|v)$/i.test(parts.at(-1)!.trim());
   // Preserve a known terminal suffix as identity, including its explicit comma formats.
   if (parts.length === 2 && suffix) return compact(parts.join(' '));
   if (parts.length === 3 && suffix) return compact(`${parts[1]} ${parts[0]} ${parts[2]}`);
