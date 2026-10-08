@@ -51,7 +51,7 @@ export class KavitaStub {
   seriesPageCap = 2;
   private tokenCounter = 0;
   private validTokens = new Set<string>();
-  private libraries: { id: number; name: string }[] = [];
+  private libraries: { id: number; name: string; type: number }[] = [];
   private series: KavitaStubSeries[] = [];
   private collections = new Map<number, KavitaStubCollection>();
   private readingLists = new Map<number, KavitaStubReadingList>();
@@ -80,9 +80,7 @@ export class KavitaStub {
       await next();
     });
 
-    this.app.get('/api/Library/libraries', (c) =>
-      c.json(this.libraries.map((library) => ({ ...library, type: 2 }))),
-    );
+    this.app.get('/api/Library/libraries', (c) => c.json(this.libraries));
 
     this.app.post('/api/Series/all-v2', async (c) => {
       const body = await c.req.json<{
@@ -260,6 +258,27 @@ export class KavitaStub {
       return c.body(null, 200);
     });
 
+    // v0.9.0.2 UpdateReadingListByChapterDto: adds exactly the requested chapter.
+    this.app.post('/api/ReadingList/update-by-chapter', async (c) => {
+      const body = await c.req.json<{
+        readingListId: number;
+        seriesId: number;
+        chapterId: number;
+      }>();
+      const list = this.readingLists.get(body.readingListId);
+      const series = this.series.find((one) => one.id === body.seriesId);
+      const ids = series?.chapterIsbns.map(
+        (_, index) => series.chapterIds?.[index] ?? series.id * 1000 + index,
+      );
+      if (!list || !series || !ids?.includes(body.chapterId))
+        return c.json({ message: 'not found' }, 400);
+      if (this.suppressChapterAdds) return c.body(null, 200);
+      if (!list.items.some((item) => item.chapterId === body.chapterId))
+        list.items.push({ id: this.nextId++, seriesId: series.id, chapterId: body.chapterId });
+      this.afterChapterAdd?.();
+      return c.body(null, 200);
+    });
+
     this.app.get('/api/ReadingList/items', (c) => {
       const list = this.readingLists.get(Number(c.req.query('readingListId')));
       if (!list) return c.json([]);
@@ -298,8 +317,8 @@ export class KavitaStub {
     });
   }
 
-  seedLibrary(id: number, name: string): void {
-    this.libraries.push({ id, name });
+  seedLibrary(id: number, name: string, type = 2): void {
+    this.libraries.push({ id, name, type });
   }
 
   seedSeries(series: KavitaStubSeries): void {
@@ -314,6 +333,19 @@ export class KavitaStub {
     if (!series) return;
     const chapters = series.chapters ?? series.chapterIsbns.map(() => ({}));
     chapters[index] = { ...chapters[index], titleName };
+    series.chapters = chapters;
+  }
+
+  setChapterIsbn(id: number, index: number, isbn: string | null): void {
+    const series = this.series.find((one) => one.id === id);
+    if (series) series.chapterIsbns[index] = isbn;
+  }
+
+  setChapterWriters(id: number, index: number, writers: string[]): void {
+    const series = this.series.find((one) => one.id === id);
+    if (!series) return;
+    const chapters = series.chapters ?? series.chapterIsbns.map(() => ({}));
+    chapters[index] = { ...chapters[index], writers };
     series.chapters = chapters;
   }
 

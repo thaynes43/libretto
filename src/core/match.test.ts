@@ -66,6 +66,46 @@ describe('matchWorks', () => {
     expect(r.matchedIds).toEqual([]);
     expect(r.missingWorks).toHaveLength(1);
   });
+
+  it('carries every canonical work bound to a retained series and the confirmed full alias', () => {
+    const first = work({ label: 'First', identifiers: ['isbn:first'] });
+    const second = work({ label: 'Second', title: 'Canonical second' });
+    const result = matchWorks(
+      [first, second],
+      [
+        {
+          id: 'old-series',
+          title: 'Old series',
+          identifiers: ['isbn:first'],
+          books: [['First'], ['Library second']],
+        },
+      ],
+      { titleFallback: true, titleAliases: { 'Canonical second': ['Library second'] } },
+    );
+    expect(result.matchedIds).toEqual(['old-series']);
+    expect(result.matchedWorks).toEqual([
+      { itemId: 'old-series', work: first },
+      { itemId: 'old-series', work: second, confirmedTitle: 'Library second' },
+    ]);
+  });
+
+  it('does not promote a series-name alias into a confirmed book title', () => {
+    const canonical = work({ label: 'Canonical book', title: 'Canonical book' });
+    const result = matchWorks(
+      [canonical],
+      [
+        {
+          id: 'umbrella',
+          title: 'Umbrella',
+          identifiers: [],
+          books: [['Actual other book', 'Umbrella: Actual other book']],
+        },
+      ],
+      { titleFallback: true, titleAliases: { 'Canonical book': ['Umbrella'] } },
+    );
+    expect(result.matchedIds).toEqual(['umbrella']);
+    expect(result.matchedWorks).toEqual([{ itemId: 'umbrella', work: canonical }]);
+  });
 });
 
 describe('matchWorks — series grain (comics)', () => {

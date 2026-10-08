@@ -257,6 +257,8 @@ Safety rules the reconciler enforces:
 
 Owned Kavita reading lists reconcile current chapter membership as well as series order, so a rescan replacing chapters under a retained series id repairs the list. Incomplete detail reads leave existing items intact.
 
+Book recipes with `ordered: true` select chapters using the matched canonical work's ISBN, or its full title or a configured alias with an agreeing author. This prevents a shared series from adding another author's book. Complete identity reads let sync mode remove foreign entries; incomplete reads preserve the list. Append mode adds verified chapters and preserves existing entries. Comics reading lists keep their established chapter order.
+
 - Ownership keys on the provenance marker in the collection description, never on the name. A renamed collection stays owned; a same-name collection without the marker is never touched.
 - `append` never removes. A run that matches zero items flags a warning and leaves the collection alone.
 - Deleting a recipe orphans its collection in the target; nothing is deleted remotely.
